@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <script>
+      (function() {
+        try {
+          var _origFetch = window.fetch;
+          var _currentFetch = _origFetch;
+          Object.defineProperty(window, 'fetch', {
+            get: function() {
+              return _currentFetch;
+            },
+            set: function(newFetch) {
+              _currentFetch = newFetch;
+            },
+            configurable: true,
+            enumerable: true
+          });
+        } catch (e) {
+          try {
+            window.fetch = window.fetch;
+          } catch (_) {}
+        }
+
+        window.addEventListener('error', function(event) {
+          if (event && event.filename && (event.filename.indexOf('chrome-extension://') !== -1 || event.filename.indexOf('moz-extension://') !== -1)) {
+            if (typeof event.preventDefault === 'function') event.preventDefault();
+            if (typeof event.stopPropagation === 'function') event.stopPropagation();
+            return true;
+          }
+        }, true);
+      })();
+    </script>
+
+    <!-- Primary Meta Tags -->
+    <title>Ticks - Smart Tools for Traders & Developers</title>
+    <meta
+      name="description"
+      content="Ticks is a high-performance terminal for quantitative trading algorithms, live forex charts, and real-time market sector heatmaps."
+    />
+    <meta name="author" content="TICKS Platform" />
+    <meta name="robots" content="index, follow" />
+    <link rel="canonical" href="https://ticks.com.np/" />
+
+    <!-- Open Graph / Facebook -->
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://ticks.com.np/" />
+    <meta property="og:title" content="Ticks - Smart Tools for Traders & Developers" />
+    <meta
+      property="og:description"
+      content="High-performance quantitative trading algorithms, live forex execution charts, and sector heatmaps."
+    />
+    <meta property="og:image" content="/assets/aistudio/ticks-high-resolution-logo_51ba51a4.png" />
+    <meta property="og:site_name" content="Ticks" />
+
+    <!-- Twitter -->
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:url" content="https://ticks.com.np/" />
+    <meta name="twitter:title" content="Ticks - Smart Tools for Traders & Developers" />
+    <meta
+      name="twitter:description"
+      content="High-performance quantitative trading algorithms, live forex execution charts, and sector heatmaps."
+    />
+    <meta name="twitter:image" content="/assets/aistudio/ticks-high-resolution-logo_51ba51a4.png" />
+
+    <!-- Favicon -->
+    <link rel="icon" type="image/png" href="/assets/aistudio/ticks-high-resolution-logo_51ba51a4.png" />
+
+    <!-- Google Fonts: Silkscreen (for highlights/headings), Geist Mono, and Inter -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Silkscreen:wght@400;700&family=Geist+Mono:wght@400;500;600&family=Inter:wght@300;400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+
+    <!-- Schema.org JSON-LD Structured Data -->
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "WebSite",
+        "name": "Ticks",
+        "url": "https://ticks.com.np/",
+        "description": "High-performance quantitative trading algorithms, live forex execution charts, and sector heatmaps.",
+        "publisher": {
+          "@type": "Organization",
+          "name": "TICKS Systems",
+          "url": "https://ticks.com.np"
+        }
+      }
+    </script>
+  </head>
+  <body class="bg-[#000000] text-[#f0f0f0] min-h-screen selection:bg-white selection:text-black antialiased">
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

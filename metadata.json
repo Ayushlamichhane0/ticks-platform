@@ -1,0 +1,6 @@
+{
+  "name": "Ticks - Smart Tools for Traders & Developers",
+  "description": "Ticks is a high-performance terminal for quantitative trading algorithms, live forex charts, and sector heatmaps.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

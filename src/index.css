@@ -1,0 +1,56 @@
+@import "tailwindcss";
+
+:root {
+  --bg: #000000;
+  --surface: #0a0a0a;
+  --surface-subtle: #121212;
+  --ink: #f0f0f0;
+  --ink-muted: #888888;
+  --accent: #ffffff;
+  --border-faint: rgba(255, 255, 255, 0.1);
+  --border-medium: rgba(255, 255, 255, 0.2);
+}
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    background-color: var(--bg);
+    color: var(--ink);
+  }
+
+  body {
+    background-color: var(--bg);
+    color: var(--ink);
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    margin: 0;
+    padding: 0;
+  }
+}
+
+::selection {
+  background: #ffffff;
+  color: #000000;
+}
+
+/* Silkscreen pixel font for highlights, titles, and tags */
+.font-silkscreen {
+  font-family: 'Silkscreen', monospace, sans-serif;
+  letter-spacing: 0.05em;
+}
+
+.font-mono-geist {
+  font-family: 'Geist Mono', monospace;
+}
+
+.font-inter {
+  font-family: 'Inter', sans-serif;
+}
+
+/* Custom subtle pixel scanline / grid texture */
+.ticks-grid-bg {
+  background-image: linear-gradient(rgba(255, 255, 255, 0.03) 1px, transparent 1px),
+                    linear-gradient(90deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
+  background-size: 32px 32px;
+}

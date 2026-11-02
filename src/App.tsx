@@ -15,7 +15,7 @@ export default function App() {
   const [view, setView] = useState<'landing' | 'trading'>('landing');
   const [selectedProject, setSelectedProject] = useState<Project | null>(null);
   const [contactModalOpen, setContactModalOpen] = useState(false);
-  const [selectedTerminalSymbol, setSelectedTerminalSymbol] = useState<string>('GOLD');
+  const [selectedTerminalSymbol, setSelectedTerminalSymbol] = useState<string>('BTC/USD');
 
   const handleSelectAssetForTerminal = (symbol: string) => {
     setSelectedTerminalSymbol(symbol);

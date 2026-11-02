@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useMemo } from 'react';
 import {
   TrendingUp,
   TrendingDown,
@@ -13,6 +13,7 @@ import {
   ArrowUpRight,
   Sparkles
 } from 'lucide-react';
+import { useMarketStore } from '../store/useMarketStore';
 
 export interface MarketTicker {
   symbol: string;
@@ -44,7 +45,7 @@ const GLOBAL_MARKET_SECTORS: SectorGroup[] = [
     shortName: 'CRYPTO',
     etf: 'IBIT / ETHA',
     stocks: [
-      { symbol: 'BTC/USD', name: 'Bitcoin / US Dollar', price: 94820.00, change: 4.85, marketCapB: 1870, peRatio: 0, volumeM: 42100, high52: 99800.00, low52: 41200.00, sector: 'Crypto', category: 'crypto', unitLabel: 'BTC' },
+      { symbol: 'BTC/USD', name: 'Bitcoin / US Dollar', price: 0, change: 0, marketCapB: 1870, peRatio: 0, volumeM: 42100, high52: 99800.00, low52: 41200.00, sector: 'Crypto', category: 'crypto', unitLabel: 'BTC' },
       { symbol: 'ETH/USD', name: 'Ethereum / US Dollar', price: 3380.50, change: 3.42, marketCapB: 408, peRatio: 0, volumeM: 18400, high52: 4090.00, low52: 2150.00, sector: 'Crypto', category: 'crypto', unitLabel: 'ETH' },
       { symbol: 'SOL/USD', name: 'Solana / US Dollar', price: 185.20, change: 6.12, marketCapB: 88, peRatio: 0, volumeM: 8200, high52: 259.00, low52: 98.40, sector: 'Crypto', category: 'crypto', unitLabel: 'SOL' },
       { symbol: 'XRP/USD', name: 'Ripple / US Dollar', price: 1.45, change: 1.85, marketCapB: 82, peRatio: 0, volumeM: 6100, high52: 2.80, low52: 0.48, sector: 'Crypto', category: 'crypto', unitLabel: 'XRP' },
@@ -56,7 +57,7 @@ const GLOBAL_MARKET_SECTORS: SectorGroup[] = [
     shortName: 'METALS & OIL',
     etf: 'GLD / SLV / USO',
     stocks: [
-      { symbol: 'GOLD', name: 'Gold Spot / US Dollar (XAU/USD)', price: 2748.50, change: 1.45, marketCapB: 17400, peRatio: 0, volumeM: 68500, high52: 2790.00, low52: 1980.00, sector: 'Metals & Commodities', category: 'commodities', unitLabel: 'TROY OZ' },
+      { symbol: 'GOLD', name: 'PAX Gold / US Dollar (gold-backed token)', price: 0, change: 0, marketCapB: 0, peRatio: 0, volumeM: 0, high52: 0, low52: 0, sector: 'Metals & Commodities', category: 'commodities', unitLabel: 'PAXG' },
       { symbol: 'SILVER', name: 'Silver Spot / US Dollar (XAG/USD)', price: 32.40, change: 2.85, marketCapB: 1450, peRatio: 0, volumeM: 14200, high52: 35.40, low52: 21.80, sector: 'Metals & Commodities', category: 'commodities', unitLabel: 'TROY OZ' },
       { symbol: 'WTI', name: 'WTI Crude Oil Spot', price: 71.80, change: -0.95, marketCapB: 2800, peRatio: 0, volumeM: 38200, high52: 87.50, low52: 65.20, sector: 'Metals & Commodities', category: 'commodities', unitLabel: 'BARREL' },
       { symbol: 'COPPER', name: 'High Grade Copper Spot', price: 4.35, change: 0.82, marketCapB: 980, peRatio: 0, volumeM: 9400, high52: 5.10, low52: 3.65, sector: 'Metals & Commodities', category: 'commodities', unitLabel: 'LB' },
@@ -119,41 +120,40 @@ interface MarketHeatmapProps {
 }
 
 export const MarketHeatmap: React.FC<MarketHeatmapProps> = ({ onSelectAssetForTerminal }) => {
-  const [sectors, setSectors] = useState<SectorGroup[]>(GLOBAL_MARKET_SECTORS);
+  const marketState = useMarketStore();
+  const btcSessionChange = marketState.btcPrice !== null && marketState.btcSessionOpenPrice !== null
+    ? +(((marketState.btcPrice - marketState.btcSessionOpenPrice) / marketState.btcSessionOpenPrice) * 100).toFixed(2)
+    : null;
+  const goldSessionChange = marketState.goldPrice !== null && marketState.goldSessionOpenPrice !== null
+    ? +(((marketState.goldPrice - marketState.goldSessionOpenPrice) / marketState.goldSessionOpenPrice) * 100).toFixed(2)
+    : null;
+  const sectors = useMemo(
+    () => GLOBAL_MARKET_SECTORS.map((sector) => ({
+      ...sector,
+      stocks: sector.stocks.map((stock) => {
+        if (stock.symbol === 'BTC/USD') {
+          return {
+            ...stock,
+            price: marketState.btcPrice ?? 0,
+            change: btcSessionChange ?? 0,
+          };
+        }
+        if (stock.symbol === 'GOLD') {
+          return {
+            ...stock,
+            price: marketState.goldPrice ?? 0,
+            change: goldSessionChange ?? 0,
+          };
+        }
+        return stock;
+      }),
+    })),
+    [btcSessionChange, goldSessionChange, marketState.btcPrice, marketState.goldPrice]
+  );
   const [activeFilter, setActiveFilter] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState('');
-  const [isLiveActive, setIsLiveActive] = useState(true);
   const [selectedStock, setSelectedStock] = useState<MarketTicker | null>(null);
   const [metricView, setMetricView] = useState<'change' | 'cap' | 'pe'>('change');
-
-  // Live real-time price fluctuations simulation
-  useEffect(() => {
-    if (!isLiveActive) return;
-
-    const interval = setInterval(() => {
-      setSectors((prevSectors) =>
-        prevSectors.map((sector) => ({
-          ...sector,
-          stocks: sector.stocks.map((stock) => {
-            if (Math.random() < 0.25) {
-              const deltaPct = (Math.random() - 0.49) * 0.22;
-              const newChange = +(stock.change + deltaPct).toFixed(2);
-              const priceDelta = stock.price * (deltaPct / 100);
-              const newPrice = +(stock.price + priceDelta).toFixed(stock.price < 10 ? 3 : 2);
-              return {
-                ...stock,
-                change: newChange,
-                price: newPrice,
-              };
-            }
-            return stock;
-          }),
-        }))
-      );
-    }, 1200);
-
-    return () => clearInterval(interval);
-  }, [isLiveActive]);
 
   // Filtered sectors list
   const filteredSectors = useMemo(() => {
@@ -210,6 +210,16 @@ export const MarketHeatmap: React.FC<MarketHeatmapProps> = ({ onSelectAssetForTe
     }
   };
 
+  const selectedStockIsBtc = selectedStock?.symbol === 'BTC/USD';
+  const selectedStockIsGold = selectedStock?.symbol === 'GOLD';
+  const selectedStockIsLive = selectedStockIsBtc || selectedStockIsGold;
+  const selectedStockPrice = selectedStockIsBtc
+    ? marketState.btcPrice
+    : selectedStockIsGold ? marketState.goldPrice : selectedStock?.price ?? null;
+  const selectedStockChange = selectedStockIsBtc
+    ? btcSessionChange
+    : selectedStockIsGold ? goldSessionChange : selectedStock?.change ?? null;
+
   return (
     <section id="heatmap" className="w-full py-10 sm:py-14 border-b border-white/10">
       
@@ -218,10 +228,10 @@ export const MarketHeatmap: React.FC<MarketHeatmapProps> = ({ onSelectAssetForTe
         <div className="flex items-center gap-3">
           <div className="w-2.5 h-2.5 bg-amber-400 rounded-full animate-pulse" />
           <span className="font-silkscreen text-sm sm:text-base text-white tracking-wider">
-            02. GLOBAL MARKET HEATMAP // GOLD &amp; BITCOIN INCLUDED
+            02. GLOBAL MARKET HEATMAP // BINANCE BTC LIVE
           </span>
           <span className="font-mono-geist text-[10px] text-white/50 border border-white/15 px-2 py-0.5">
-            WORLDWIDE MOST TRADED ASSETS
+            BTC + PAXG LIVE · OTHER TILES REFERENCE DATA
           </span>
         </div>
 
@@ -246,15 +256,12 @@ export const MarketHeatmap: React.FC<MarketHeatmapProps> = ({ onSelectAssetForTe
             </button>
           </div>
 
-          <button
-            onClick={() => setIsLiveActive(!isLiveActive)}
-            className={`px-2.5 py-1.5 border border-white/15 flex items-center gap-1.5 cursor-pointer text-[11px] ${
-              isLiveActive ? 'bg-white/10 text-white' : 'bg-neutral-900 text-white/40'
-            }`}
-          >
-            <Zap className={`w-3 h-3 ${isLiveActive ? 'text-amber-400' : 'text-white/30'}`} />
-            <span className="font-silkscreen text-[10px]">{isLiveActive ? 'LIVE TICKS' : 'FROZEN'}</span>
-          </button>
+          <span className="px-2.5 py-1.5 border border-white/15 inline-flex items-center gap-1.5 text-[11px]">
+            <Zap className={`w-3 h-3 ${marketState.btcStatus === 'connected' && marketState.goldStatus === 'connected' ? 'text-emerald-400' : 'text-amber-400'}`} />
+            <span className="font-silkscreen text-[10px]">
+              BTC {marketState.btcStatus.toUpperCase()} · PAXG {marketState.goldStatus.toUpperCase()}
+            </span>
+          </span>
         </div>
       </div>
 
@@ -358,7 +365,13 @@ export const MarketHeatmap: React.FC<MarketHeatmapProps> = ({ onSelectAssetForTe
                 {/* Weighted Treemap Grid for Sector */}
                 <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-2">
                   {sortedStocks.map((stock) => {
-                    const colorStyle = getPerformanceColor(stock.change);
+                    const isLiveAsset = stock.symbol === 'BTC/USD' || stock.symbol === 'GOLD';
+                    const isLivePriceUnavailable = isLiveAsset && (
+                      stock.symbol === 'BTC/USD'
+                        ? marketState.btcPrice === null
+                        : marketState.goldPrice === null
+                    );
+                    const colorStyle = getPerformanceColor(isLivePriceUnavailable ? 0 : stock.change);
                     const isGiant = stock.marketCapB > 2000;
                     const isLarge = stock.marketCapB > 400 && !isGiant;
                     
@@ -393,10 +406,16 @@ export const MarketHeatmap: React.FC<MarketHeatmapProps> = ({ onSelectAssetForTe
                           {/* Live Performance Badge */}
                           <div
                             className={`font-mono-geist text-[10px] font-bold px-1.5 py-0.5 text-white flex items-center gap-0.5 ${
-                              stock.change >= 0 ? 'bg-emerald-950/90 border border-emerald-500/40' : 'bg-rose-950/90 border border-rose-500/40'
+                              isLivePriceUnavailable
+                                ? 'bg-neutral-900 border border-neutral-600/40'
+                                : stock.change >= 0
+                                  ? 'bg-emerald-950/90 border border-emerald-500/40'
+                                  : 'bg-rose-950/90 border border-rose-500/40'
                             }`}
                           >
-                            {stock.change >= 0 ? '+' : ''}{stock.change.toFixed(2)}%
+                            {isLivePriceUnavailable
+                              ? 'WAITING'
+                              : `${stock.change >= 0 ? '+' : ''}${stock.change.toFixed(2)}%`}
                           </div>
                         </div>
 
@@ -404,11 +423,19 @@ export const MarketHeatmap: React.FC<MarketHeatmapProps> = ({ onSelectAssetForTe
                         <div className="pt-2 flex items-end justify-between font-mono-geist">
                           <div>
                             <span className="text-white text-xs sm:text-sm font-semibold tracking-tight">
-                              ${stock.price.toLocaleString('en-US', { minimumFractionDigits: stock.price < 10 ? 3 : 2 })}
+                              {isLivePriceUnavailable
+                                ? '--'
+                                : `$${stock.price.toLocaleString('en-US', { minimumFractionDigits: stock.price < 10 ? 3 : 2 })}`}
                             </span>
                           </div>
                           <div className="text-right text-[10px] text-white/70">
-                            {metricView === 'change' && <span>{stock.change >= 0 ? '▲' : '▼'} {Math.abs(stock.change).toFixed(2)}%</span>}
+                            {metricView === 'change' && (
+                              <span>
+                                {isLivePriceUnavailable
+                                  ? 'WAITING FOR LIVE DATA'
+                                  : `${stock.change >= 0 ? '▲' : '▼'} ${Math.abs(stock.change).toFixed(2)}%${isLiveAsset ? ' SESSION' : ''}`}
+                              </span>
+                            )}
                             {metricView === 'cap' && <span>${stock.marketCapB}B</span>}
                           </div>
                         </div>
@@ -480,18 +507,34 @@ export const MarketHeatmap: React.FC<MarketHeatmapProps> = ({ onSelectAssetForTe
             {/* Price & Performance Hero */}
             <div className="flex items-baseline justify-between bg-black border border-white/10 p-4">
               <div>
-                <div className="text-[10px] text-white/40 uppercase">SPOT PRICE</div>
+                <div className="text-[10px] text-white/40 uppercase">
+                  {selectedStockIsLive
+                    ? `BINANCE ${selectedStockIsBtc ? 'BTC/USDT' : 'PAXG/USDT'} LAST TRADE`
+                    : 'SPOT PRICE'}
+                </div>
                 <div className="font-silkscreen text-3xl font-bold text-white mt-1">
-                  ${selectedStock.price.toLocaleString('en-US', { minimumFractionDigits: selectedStock.price < 10 ? 3 : 2 })}
+                  {selectedStockPrice === null
+                    ? '--'
+                    : `$${selectedStockPrice.toLocaleString('en-US', { minimumFractionDigits: selectedStockPrice < 10 ? 3 : 2 })}`}
                 </div>
               </div>
               <div
                 className={`font-silkscreen text-base font-bold px-3 py-1.5 flex items-center gap-1 ${
-                  selectedStock.change >= 0 ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/40' : 'bg-rose-500/20 text-rose-400 border border-rose-500/40'
+                  selectedStockChange === null
+                    ? 'bg-neutral-900 text-white/50 border border-neutral-600/40'
+                    : selectedStockChange >= 0
+                      ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/40'
+                      : 'bg-rose-500/20 text-rose-400 border border-rose-500/40'
                 }`}
               >
-                {selectedStock.change >= 0 ? <TrendingUp className="w-4 h-4" /> : <TrendingDown className="w-4 h-4" />}
-                <span>{selectedStock.change >= 0 ? '+' : ''}{selectedStock.change.toFixed(2)}%</span>
+                {selectedStockChange === null
+                  ? <span>WAITING FOR LIVE DATA</span>
+                  : (
+                    <>
+                      {selectedStockChange >= 0 ? <TrendingUp className="w-4 h-4" /> : <TrendingDown className="w-4 h-4" />}
+                      <span>{selectedStockChange >= 0 ? '+' : ''}{selectedStockChange.toFixed(2)}%{selectedStockIsLive ? ' SESSION' : ''}</span>
+                    </>
+                  )}
               </div>
             </div>
 

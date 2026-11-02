@@ -19,6 +19,7 @@ import {
   Sparkles,
   Info
 } from 'lucide-react';
+import { useMarketStore } from '../store/useMarketStore';
 
 export interface Candle {
   timeStr: string;       // Formatted time string for axis/tooltip
@@ -34,25 +35,24 @@ export interface Candle {
 export interface MarketInstrument {
   symbol: string;
   name: string;
-  basePrice: number;
+  feedSymbol?: 'BTC/USDT' | 'PAXG/USDT';
   pipSize: number;       // Point precision step
   decimals: number;
-  spreadPips: number;
   contractSize: number;  // Units per 1.0 Lot (e.g. 100 for Gold, 1 for BTC, 100,000 for Forex)
   category: 'Metals & Commodities' | 'Crypto' | 'Forex Major' | 'Global Stocks';
   icon: string;
 }
 
 export const MARKET_INSTRUMENTS: MarketInstrument[] = [
-  { symbol: 'GOLD', name: 'Gold Spot / US Dollar (XAU/USD)', basePrice: 2748.50, pipSize: 0.10, decimals: 2, spreadPips: 25, contractSize: 100, category: 'Metals & Commodities', icon: '🥇' },
-  { symbol: 'BTC/USD', name: 'Bitcoin / US Dollar', basePrice: 94820.00, pipSize: 1.00, decimals: 2, spreadPips: 150, contractSize: 1, category: 'Crypto', icon: '₿' },
-  { symbol: 'ETH/USD', name: 'Ethereum / US Dollar', basePrice: 3380.50, pipSize: 0.10, decimals: 2, spreadPips: 40, contractSize: 10, category: 'Crypto', icon: 'Ξ' },
-  { symbol: 'SILVER', name: 'Silver Spot / US Dollar (XAG/USD)', basePrice: 32.40, pipSize: 0.01, decimals: 3, spreadPips: 2, contractSize: 5000, category: 'Metals & Commodities', icon: '🥈' },
-  { symbol: 'EUR/USD', name: 'Euro / US Dollar', basePrice: 1.08465, pipSize: 0.0001, decimals: 5, spreadPips: 0.4, contractSize: 100000, category: 'Forex Major', icon: '€' },
-  { symbol: 'GBP/USD', name: 'British Pound / USD', basePrice: 1.29340, pipSize: 0.0001, decimals: 5, spreadPips: 0.6, contractSize: 100000, category: 'Forex Major', icon: '£' },
-  { symbol: 'USD/JPY', name: 'US Dollar / Yen', basePrice: 154.680, pipSize: 0.01, decimals: 3, spreadPips: 0.5, contractSize: 100000, category: 'Forex Major', icon: '¥' },
-  { symbol: 'NVDA', name: 'NVIDIA Corporation', basePrice: 143.50, pipSize: 0.01, decimals: 2, spreadPips: 8, contractSize: 100, category: 'Global Stocks', icon: '🟢' },
-  { symbol: 'AAPL', name: 'Apple Inc.', basePrice: 234.80, pipSize: 0.01, decimals: 2, spreadPips: 5, contractSize: 100, category: 'Global Stocks', icon: '🍎' },
+  { symbol: 'GOLD', name: 'PAX Gold / US Dollar (gold-backed token)', feedSymbol: 'PAXG/USDT', pipSize: 0.10, decimals: 2, contractSize: 1, category: 'Metals & Commodities', icon: '🥇' },
+  { symbol: 'BTC/USD', name: 'Bitcoin / US Dollar (Binance BTC/USDT)', pipSize: 1.00, decimals: 2, contractSize: 1, category: 'Crypto', icon: '₿' },
+  { symbol: 'ETH/USD', name: 'Ethereum / US Dollar', pipSize: 0.10, decimals: 2, contractSize: 10, category: 'Crypto', icon: 'Ξ' },
+  { symbol: 'SILVER', name: 'Silver Spot / US Dollar (XAG/USD)', pipSize: 0.01, decimals: 3, contractSize: 5000, category: 'Metals & Commodities', icon: '🥈' },
+  { symbol: 'EUR/USD', name: 'Euro / US Dollar', pipSize: 0.0001, decimals: 5, contractSize: 100000, category: 'Forex Major', icon: '€' },
+  { symbol: 'GBP/USD', name: 'British Pound / USD', pipSize: 0.0001, decimals: 5, contractSize: 100000, category: 'Forex Major', icon: '£' },
+  { symbol: 'USD/JPY', name: 'US Dollar / Yen', pipSize: 0.01, decimals: 3, contractSize: 100000, category: 'Forex Major', icon: '¥' },
+  { symbol: 'NVDA', name: 'NVIDIA Corporation', pipSize: 0.01, decimals: 2, contractSize: 100, category: 'Global Stocks', icon: '🟢' },
+  { symbol: 'AAPL', name: 'Apple Inc.', pipSize: 0.01, decimals: 2, contractSize: 100, category: 'Global Stocks', icon: '🍎' },
 ];
 
 export const TIMEFRAMES = ['1M', '5M', '15M', '1H', '4H', '1D'] as const;
@@ -104,68 +104,39 @@ function getTimeStepMs(tf: Timeframe): number {
   }
 }
 
-// Generate initial candles with 100% accurate dates & timestamps
-function generateInitialCandles(instrument: MarketInstrument, timeframe: Timeframe, count = 48): Candle[] {
-  const candles: Candle[] = [];
-  const now = Date.now();
-  const stepMs = getTimeStepMs(timeframe);
-  let currentClose = instrument.basePrice;
+function createCandleTime(timestamp: number, timeframe: Timeframe) {
+  const dateObj = new Date(timestamp);
+  const dateStr = [
+    dateObj.getFullYear(),
+    String(dateObj.getMonth() + 1).padStart(2, '0'),
+    String(dateObj.getDate()).padStart(2, '0'),
+  ].join('-');
+  const month = String(dateObj.getMonth() + 1).padStart(2, '0');
+  const day = String(dateObj.getDate()).padStart(2, '0');
+  const hours = String(dateObj.getHours()).padStart(2, '0');
+  const minutes = String(dateObj.getMinutes()).padStart(2, '0');
 
-  for (let i = count; i >= 0; i--) {
-    const t = now - i * stepMs;
-    const dateObj = new Date(t);
-    
-    // Accurate 100% date formatting
-    const yyyy = dateObj.getFullYear();
-    const mm = String(dateObj.getMonth() + 1).padStart(2, '0');
-    const dd = String(dateObj.getDate()).padStart(2, '0');
-    const dateStr = `${yyyy}-${mm}-${dd}`;
-
-    const hh = String(dateObj.getHours()).padStart(2, '0');
-    const min = String(dateObj.getMinutes()).padStart(2, '0');
-    const timeStr = timeframe === '1D' ? `${mm}/${dd}` : `${hh}:${min}`;
-
-    // realistic percentage volatility per candle
-    const volatilityPct = timeframe === '1D' ? 0.008 : timeframe === '4H' || timeframe === '1H' ? 0.0035 : 0.0015;
-    const volatility = instrument.basePrice * volatilityPct;
-    const delta = (Math.random() - 0.495) * volatility;
-    
-    const open = currentClose;
-    const close = +(open + delta).toFixed(instrument.decimals);
-    const high = +(Math.max(open, close) + Math.random() * volatility * 0.7).toFixed(instrument.decimals);
-    const low = +(Math.min(open, close) - Math.random() * volatility * 0.7).toFixed(instrument.decimals);
-    const volume = Math.floor(150 + Math.random() * 1200);
-
-    candles.push({
-      timeStr,
-      dateStr,
-      timestamp: t,
-      open,
-      high,
-      low,
-      close,
-      volume
-    });
-    currentClose = close;
-  }
-  return candles;
+  return {
+    dateStr,
+    timeStr: timeframe === '1D' ? `${month}/${day}` : `${hours}:${minutes}`,
+  };
 }
 
 export const ForexChart: React.FC<ForexChartProps> = ({ selectedSymbol, onSelectSymbol }) => {
+  const marketState = useMarketStore();
   // Instrument selection
   const currentInstrument = useMemo(() => {
     if (selectedSymbol) {
       const match = MARKET_INSTRUMENTS.find((inst) => inst.symbol.toLowerCase() === selectedSymbol.toLowerCase());
       if (match) return match;
     }
-    return MARKET_INSTRUMENTS[0]; // Default GOLD
+    return MARKET_INSTRUMENTS[1]; // Default BTC/USD
   }, [selectedSymbol]);
 
   const [timeframe, setTimeframe] = useState<Timeframe>('5M');
   const [chartType, setChartType] = useState<'candlestick' | 'line'>('candlestick');
   const [showIndicators, setShowIndicators] = useState(true);
   const [isLiveStreaming, setIsLiveStreaming] = useState(true);
-  const [tickSpeed, setTickSpeed] = useState<'normal' | 'fast'>('normal');
 
   // Hover Crosshair
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
@@ -190,14 +161,14 @@ export const ForexChart: React.FC<ForexChartProps> = ({ selectedSymbol, onSelect
   }, [demoBalance]);
 
   // Candle series
-  const [candles, setCandles] = useState<Candle[]>(() =>
-    generateInitialCandles(currentInstrument, timeframe)
-  );
+  const [candles, setCandles] = useState<Candle[]>([]);
+  const lastProcessedTradeId = useRef(0);
 
-  // Re-seed candles when instrument or timeframe changes
+  // Only live Binance trades are used to build chart candles.
   useEffect(() => {
-    setCandles(generateInitialCandles(currentInstrument, timeframe));
+    setCandles([]);
     setHoverIndex(null);
+    lastProcessedTradeId.current = 0;
   }, [currentInstrument, timeframe]);
 
   // Handle instrument change
@@ -207,101 +178,123 @@ export const ForexChart: React.FC<ForexChartProps> = ({ selectedSymbol, onSelect
     }
   };
 
-  // Live WebSocket Real-Time Tick Engine
+  // Aggregate Binance trades into candles and update demo positions.
   useEffect(() => {
-    if (!isLiveStreaming) return;
+    if (
+      !isLiveStreaming ||
+      (currentInstrument.symbol !== 'BTC/USD' && currentInstrument.symbol !== 'GOLD')
+    ) {
+      return;
+    }
 
-    const intervalMs = tickSpeed === 'fast' ? 350 : 800;
-    const interval = setInterval(() => {
-      setCandles((prev) => {
-        if (prev.length === 0) return prev;
-        const last = prev[prev.length - 1];
+    const stepMs = getTimeStepMs(timeframe);
+    const sourceTrades = currentInstrument.symbol === 'BTC/USD'
+      ? marketState.btcTrades
+      : marketState.goldTrades;
+    const newTrades = sourceTrades.filter((trade) => trade.id > lastProcessedTradeId.current);
 
-        // Volatility multiplier based on asset class
-        const baseVolRatio = currentInstrument.category === 'Crypto' ? 0.0008 : currentInstrument.symbol === 'GOLD' ? 0.0005 : 0.0003;
-        const volatility = currentInstrument.basePrice * baseVolRatio;
-        const tickMove = (Math.random() - 0.495) * volatility;
-        const newClose = +(last.close + tickMove).toFixed(currentInstrument.decimals);
-        const newHigh = Math.max(last.high, newClose);
-        const newLow = Math.min(last.low, newClose);
+    if (newTrades.length > 0) {
+      setCandles((previousCandles) => {
+        let nextCandles = [...previousCandles];
 
-        // Position PnL and TP/SL check on every tick
-        setPositions((prevPositions) =>
-          prevPositions.map((pos) => {
-            if (pos.symbol === currentInstrument.symbol) {
-              const priceDelta = pos.type === 'BUY' ? newClose - pos.entryPrice : pos.entryPrice - newClose;
-              const livePnl = +(priceDelta * pos.contractSize * pos.lots).toFixed(2);
-              
-              // Auto TP / SL execution
-              if (pos.tp && ((pos.type === 'BUY' && newClose >= pos.tp) || (pos.type === 'SELL' && newClose <= pos.tp))) {
-                triggerAutoClose(pos, newClose, 'TAKE_PROFIT', livePnl);
-              } else if (pos.sl && ((pos.type === 'BUY' && newClose <= pos.sl) || (pos.type === 'SELL' && newClose >= pos.sl))) {
-                triggerAutoClose(pos, newClose, 'STOP_LOSS', livePnl);
-              }
+        for (const trade of newTrades) {
+          const bucketTime = Math.floor(trade.timestamp / stepMs) * stepMs;
+          const { dateStr, timeStr } = createCandleTime(bucketTime, timeframe);
+          const lastCandle = nextCandles[nextCandles.length - 1];
 
-              return {
-                ...pos,
-                currentPrice: newClose,
-                pnl: livePnl,
-              };
-            }
-            return pos;
-          })
-        );
-
-        // Every ~12 ticks, roll into a new candle
-        const shouldNewCandle = Math.random() < 0.08;
-
-        if (shouldNewCandle) {
-          const nowObj = new Date();
-          const yyyy = nowObj.getFullYear();
-          const mm = String(nowObj.getMonth() + 1).padStart(2, '0');
-          const dd = String(nowObj.getDate()).padStart(2, '0');
-          const dateStr = `${yyyy}-${mm}-${dd}`;
-
-          const hh = String(nowObj.getHours()).padStart(2, '0');
-          const min = String(nowObj.getMinutes()).padStart(2, '0');
-          const timeStr = timeframe === '1D' ? `${mm}/${dd}` : `${hh}:${min}`;
-
-          const newCandle: Candle = {
-            timeStr,
-            dateStr,
-            timestamp: Date.now(),
-            open: newClose,
-            high: newClose,
-            low: newClose,
-            close: newClose,
-            volume: Math.floor(80 + Math.random() * 400),
-          };
-          return [...prev.slice(1), newCandle];
-        } else {
-          const updatedLast: Candle = {
-            ...last,
-            high: newHigh,
-            low: newLow,
-            close: newClose,
-            volume: last.volume + Math.floor(Math.random() * 6),
-          };
-          return [...prev.slice(0, -1), updatedLast];
+          if (lastCandle?.timestamp === bucketTime) {
+            nextCandles[nextCandles.length - 1] = {
+              ...lastCandle,
+              high: Math.max(lastCandle.high, trade.price),
+              low: Math.min(lastCandle.low, trade.price),
+              close: trade.price,
+              volume: lastCandle.volume + trade.quantity,
+            };
+          } else {
+            nextCandles = [
+              ...nextCandles.slice(-47),
+              {
+                timeStr,
+                dateStr,
+                timestamp: bucketTime,
+                open: trade.price,
+                high: trade.price,
+                low: trade.price,
+                close: trade.price,
+                volume: trade.quantity,
+              },
+            ];
+          }
         }
-      });
-    }, intervalMs);
 
-    return () => clearInterval(interval);
-  }, [isLiveStreaming, tickSpeed, currentInstrument, timeframe]);
+        return nextCandles;
+      });
+      lastProcessedTradeId.current = newTrades[newTrades.length - 1].id;
+    }
+
+    const price = currentInstrument.symbol === 'BTC/USD'
+      ? marketState.btcPrice
+      : marketState.goldPrice;
+    if (price === null) return;
+
+    setPositions((previousPositions) =>
+      previousPositions.map((position) => {
+        if (position.symbol !== currentInstrument.symbol) return position;
+
+        const priceDelta = position.type === 'BUY'
+          ? price - position.entryPrice
+          : position.entryPrice - price;
+        const livePnl = +(priceDelta * position.contractSize * position.lots).toFixed(2);
+
+        if (
+          position.tp &&
+          ((position.type === 'BUY' && price >= position.tp) ||
+            (position.type === 'SELL' && price <= position.tp))
+        ) {
+          triggerAutoClose(position, price, 'TAKE_PROFIT', livePnl);
+        } else if (
+          position.sl &&
+          ((position.type === 'BUY' && price <= position.sl) ||
+            (position.type === 'SELL' && price >= position.sl))
+        ) {
+          triggerAutoClose(position, price, 'STOP_LOSS', livePnl);
+        }
+
+        return { ...position, currentPrice: price, pnl: livePnl };
+      })
+    );
+  }, [
+    currentInstrument.symbol,
+    isLiveStreaming,
+    marketState.btcPrice,
+    marketState.btcTrades,
+    marketState.goldPrice,
+    marketState.goldTrades,
+    timeframe,
+  ]);
 
   // Current Market metrics
-  const currentCandle = candles[candles.length - 1] || { close: currentInstrument.basePrice, open: currentInstrument.basePrice };
-  const firstCandle = candles[0] || { close: currentInstrument.basePrice };
-  const currentPrice = currentCandle.close;
-  const priceChange = +(currentPrice - firstCandle.open).toFixed(currentInstrument.decimals);
-  const priceChangePct = +((priceChange / (firstCandle.open || 1)) * 100).toFixed(2);
-  const isPositive = priceChange >= 0;
+  const isBtcInstrument = currentInstrument.symbol === 'BTC/USD';
+  const isGoldInstrument = currentInstrument.symbol === 'GOLD';
+  const currentPrice = isBtcInstrument
+    ? marketState.btcPrice
+    : isGoldInstrument ? marketState.goldPrice : null;
+  const sessionOpenPrice = isBtcInstrument
+    ? marketState.btcSessionOpenPrice
+    : isGoldInstrument ? marketState.goldSessionOpenPrice : null;
+  const currentFeedStatus = isBtcInstrument
+    ? marketState.btcStatus
+    : isGoldInstrument ? marketState.goldStatus : 'disconnected';
+  const priceChange = currentPrice !== null && sessionOpenPrice !== null
+    ? +(currentPrice - sessionOpenPrice).toFixed(currentInstrument.decimals)
+    : null;
+  const priceChangePct = priceChange !== null && sessionOpenPrice
+    ? +((priceChange / sessionOpenPrice) * 100).toFixed(2)
+    : null;
+  const isPositive = (priceChange ?? 0) >= 0;
 
-  // Spread Bid / Ask
-  const spreadValue = currentInstrument.spreadPips * currentInstrument.pipSize;
-  const bidPrice = +(currentPrice - spreadValue / 2).toFixed(currentInstrument.decimals);
-  const askPrice = +(currentPrice + spreadValue / 2).toFixed(currentInstrument.decimals);
+  const bidPrice = currentPrice;
+  const askPrice = currentPrice;
 
   // Compute total unrealized floating PnL
   const totalFloatingPnl = useMemo(() => {
@@ -339,11 +332,12 @@ export const ForexChart: React.FC<ForexChartProps> = ({ selectedSymbol, onSelect
   // Execute Market Order (BUY / SELL) with Demo Money
   const handleExecuteOrder = (side: 'BUY' | 'SELL') => {
     const execPrice = side === 'BUY' ? askPrice : bidPrice;
+    if (execPrice === null) return;
     const tpVal = orderTP ? parseFloat(orderTP) : null;
     const slVal = orderSL ? parseFloat(orderSL) : null;
     
     const newPos: OpenPosition = {
-      id: Math.random().toString(36).substring(2, 9),
+      id: crypto.randomUUID(),
       symbol: currentInstrument.symbol,
       type: side,
       lots: orderLots,
@@ -406,6 +400,10 @@ export const ForexChart: React.FC<ForexChartProps> = ({ selectedSymbol, onSelect
 
   // Min / Max computation for scale
   const { minPrice, maxPrice, priceRange } = useMemo(() => {
+    if (candles.length === 0) {
+      return { minPrice: 0, maxPrice: 0, priceRange: 1 };
+    }
+
     let min = Infinity;
     let max = -Infinity;
     for (const c of candles) {
@@ -426,8 +424,12 @@ export const ForexChart: React.FC<ForexChartProps> = ({ selectedSymbol, onSelect
   };
 
   const candleCount = candles.length;
-  const candleSlotWidth = plotWidth / candleCount;
+  const candleSlotWidth = plotWidth / Math.max(candleCount, 1);
   const candleBodyWidth = Math.max(3, Math.min(12, candleSlotWidth * 0.65));
+  const maxCandleVolume = useMemo(
+    () => candles.reduce((maxVolume, candle) => Math.max(maxVolume, candle.volume), 0),
+    [candles]
+  );
 
   // Compute Simple Moving Average (SMA 10)
   const smaPoints = useMemo(() => {
@@ -451,7 +453,9 @@ export const ForexChart: React.FC<ForexChartProps> = ({ selectedSymbol, onSelect
     return smaPoints.map((pt, idx) => `${idx === 0 ? 'M' : 'L'} ${pt.x.toFixed(1)} ${pt.y.toFixed(1)}`).join(' ');
   }, [smaPoints]);
 
-  const activeCandle = hoverIndex !== null && candles[hoverIndex] ? candles[hoverIndex] : currentCandle;
+  const activeCandle = hoverIndex !== null && candles[hoverIndex]
+    ? candles[hoverIndex]
+    : candles[candles.length - 1];
 
   return (
     <section id="forex" className="w-full py-10 sm:py-14 border-b border-white/10">
@@ -463,8 +467,12 @@ export const ForexChart: React.FC<ForexChartProps> = ({ selectedSymbol, onSelect
           <span className="font-silkscreen text-sm sm:text-base text-white tracking-wider">
             01. LIVE TRADING TERMINAL // DEMO MONEY
           </span>
-          <span className="font-mono-geist text-[10px] text-amber-400 border border-amber-500/30 px-2 py-0.5 bg-amber-500/10 font-bold">
-            100% ACCURATE REAL-TIME FEEDS
+          <span className={`font-mono-geist text-[10px] border px-2 py-0.5 font-bold ${
+            currentFeedStatus === 'connected'
+              ? 'text-emerald-400 border-emerald-500/30 bg-emerald-500/10'
+              : 'text-amber-400 border-amber-500/30 bg-amber-500/10'
+          }`}>
+            BINANCE {currentInstrument.feedSymbol ?? 'NO LIVE FEED'} // {currentFeedStatus.toUpperCase()}
           </span>
         </div>
 
@@ -493,7 +501,7 @@ export const ForexChart: React.FC<ForexChartProps> = ({ selectedSymbol, onSelect
             }`}
           >
             {isLiveStreaming ? <Pause className="w-3.5 h-3.5 text-emerald-400" /> : <Play className="w-3.5 h-3.5" />}
-            <span className="font-silkscreen text-[10px]">{isLiveStreaming ? 'LIVE' : 'PAUSED'}</span>
+            <span className="font-silkscreen text-[10px]">{isLiveStreaming ? 'CHART LIVE' : 'CHART PAUSED'}</span>
           </button>
         </div>
       </div>
@@ -564,6 +572,9 @@ export const ForexChart: React.FC<ForexChartProps> = ({ selectedSymbol, onSelect
       <div className="flex items-center gap-2 overflow-x-auto pb-3 mb-6 scrollbar-none font-mono-geist text-xs">
         {MARKET_INSTRUMENTS.map((inst) => {
           const isSelected = currentInstrument.symbol === inst.symbol;
+          const liveInstrumentPrice = inst.symbol === 'BTC/USD'
+            ? marketState.btcPrice
+            : inst.symbol === 'GOLD' ? marketState.goldPrice : null;
           return (
             <button
               key={inst.symbol}
@@ -576,6 +587,13 @@ export const ForexChart: React.FC<ForexChartProps> = ({ selectedSymbol, onSelect
             >
               <span className="text-sm">{inst.icon}</span>
               <span className="font-silkscreen text-[11px] tracking-wider">{inst.symbol}</span>
+              {(inst.symbol === 'BTC/USD' || inst.symbol === 'GOLD') && (
+                <span className="font-mono-geist text-[10px]">
+                  {liveInstrumentPrice === null
+                    ? '--'
+                    : `$${liveInstrumentPrice.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+                </span>
+              )}
               <span className={`text-[9.5px] px-1 py-0.2 ${isSelected ? 'bg-black text-white' : 'bg-white/10 text-white/60'}`}>
                 {inst.category}
               </span>
@@ -613,17 +631,23 @@ export const ForexChart: React.FC<ForexChartProps> = ({ selectedSymbol, onSelect
                 </div>
                 <div className="flex items-baseline gap-3 mt-1">
                   <span className="font-silkscreen text-2xl sm:text-3xl text-white font-bold tracking-tight">
-                    ${currentPrice.toLocaleString('en-US', { minimumFractionDigits: currentInstrument.decimals, maximumFractionDigits: currentInstrument.decimals })}
+                    {currentPrice === null
+                      ? currentFeedStatus === 'connecting'
+                        ? 'CONNECTING...'
+                        : currentFeedStatus === 'error'
+                          ? 'FEED RECONNECTING...'
+                          : 'LIVE PRICE UNAVAILABLE'
+                      : `$${currentPrice.toLocaleString('en-US', { minimumFractionDigits: currentInstrument.decimals, maximumFractionDigits: currentInstrument.decimals })}`}
                   </span>
-                  <div
-                    className={`flex items-center gap-1 text-xs font-semibold px-2 py-0.5 ${
+                  {priceChange !== null && priceChangePct !== null && (
+                    <div className={`flex items-center gap-1 text-xs font-semibold px-2 py-0.5 ${
                       isPositive ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30' : 'bg-rose-500/10 text-rose-400 border border-rose-500/30'
-                    }`}
-                  >
-                    {isPositive ? <TrendingUp className="w-3.5 h-3.5" /> : <TrendingDown className="w-3.5 h-3.5" />}
-                    <span>{isPositive ? '+' : ''}{priceChange.toFixed(currentInstrument.decimals)}</span>
-                    <span>({isPositive ? '+' : ''}{priceChangePct}%)</span>
-                  </div>
+                    }`}>
+                      {isPositive ? <TrendingUp className="w-3.5 h-3.5" /> : <TrendingDown className="w-3.5 h-3.5" />}
+                      <span>{isPositive ? '+' : ''}{priceChange.toFixed(currentInstrument.decimals)}</span>
+                      <span>({isPositive ? '+' : ''}{priceChangePct}% SESSION)</span>
+                    </div>
+                  )}
                 </div>
               </div>
 
@@ -658,28 +682,22 @@ export const ForexChart: React.FC<ForexChartProps> = ({ selectedSymbol, onSelect
                   SMA(10): {showIndicators ? 'ON' : 'OFF'}
                 </button>
 
-                <button
-                  onClick={() => setTickSpeed(tickSpeed === 'normal' ? 'fast' : 'normal')}
-                  className="text-[10px] font-silkscreen px-2 py-1 border border-white/15 text-white/60 hover:text-white transition-colors cursor-pointer"
-                >
-                  SPEED: {tickSpeed.toUpperCase()}
-                </button>
               </div>
             </div>
 
-            {/* Active Candle Hover Telemetry with 100% Accurate Date & Time */}
+            {/* Active Binance Candle Telemetry */}
             <div className="py-2.5 px-3 bg-black/80 border border-white/10 my-3 flex flex-wrap items-center justify-between text-[11px] font-mono-geist text-white/70 gap-2">
               <div className="flex items-center gap-3 flex-wrap">
-                <span className="text-amber-400 font-silkscreen text-[10px]">DATE: {activeCandle.dateStr}</span>
-                <span>TIME: <strong className="text-white">{activeCandle.timeStr}</strong></span>
-                <span>O: <strong className="text-white">{activeCandle.open.toFixed(currentInstrument.decimals)}</strong></span>
-                <span>H: <strong className="text-white">{activeCandle.high.toFixed(currentInstrument.decimals)}</strong></span>
-                <span>L: <strong className="text-white">{activeCandle.low.toFixed(currentInstrument.decimals)}</strong></span>
-                <span>C: <strong className="text-white">{activeCandle.close.toFixed(currentInstrument.decimals)}</strong></span>
+                <span className="text-amber-400 font-silkscreen text-[10px]">DATE: {activeCandle?.dateStr ?? '--'}</span>
+                <span>TIME: <strong className="text-white">{activeCandle?.timeStr ?? '--'}</strong></span>
+                <span>O: <strong className="text-white">{activeCandle?.open.toFixed(currentInstrument.decimals) ?? '--'}</strong></span>
+                <span>H: <strong className="text-white">{activeCandle?.high.toFixed(currentInstrument.decimals) ?? '--'}</strong></span>
+                <span>L: <strong className="text-white">{activeCandle?.low.toFixed(currentInstrument.decimals) ?? '--'}</strong></span>
+                <span>C: <strong className="text-white">{activeCandle?.close.toFixed(currentInstrument.decimals) ?? '--'}</strong></span>
               </div>
               <div className="flex items-center gap-3 text-white/50 text-[10px]">
-                <span>VOL: <span className="text-white/80">{activeCandle.volume} CONTRACTS</span></span>
-                <span>SPREAD: <span className="text-white/80">{currentInstrument.spreadPips} PIPS</span></span>
+                <span>VOL: <span className="text-white/80">{activeCandle?.volume.toFixed(5) ?? '--'} {isBtcInstrument ? 'BTC' : 'PAXG'}</span></span>
+                <span>SOURCE: <span className="text-white/80">BINANCE {currentInstrument.feedSymbol ?? 'N/A'} TRADES</span></span>
               </div>
             </div>
 
@@ -693,7 +711,7 @@ export const ForexChart: React.FC<ForexChartProps> = ({ selectedSymbol, onSelect
                   const rect = e.currentTarget.getBoundingClientRect();
                   const mouseX = ((e.clientX - rect.left) / rect.width) * svgWidth;
                   const relativeX = mouseX - padding.left;
-                  if (relativeX >= 0 && relativeX <= plotWidth) {
+                  if (candleCount > 0 && relativeX >= 0 && relativeX <= plotWidth) {
                     const idx = Math.min(
                       candles.length - 1,
                       Math.max(0, Math.floor(relativeX / candleSlotWidth))
@@ -742,7 +760,7 @@ export const ForexChart: React.FC<ForexChartProps> = ({ selectedSymbol, onSelect
                         fontSize="9"
                         fontFamily="Geist Mono, monospace"
                       >
-                        {price.toFixed(currentInstrument.decimals)}
+                        {candleCount > 0 ? price.toFixed(currentInstrument.decimals) : '--'}
                       </text>
                     </g>
                   );
@@ -751,7 +769,7 @@ export const ForexChart: React.FC<ForexChartProps> = ({ selectedSymbol, onSelect
                 {/* Volume Bars at bottom */}
                 {candles.map((c, i) => {
                   const x = padding.left + i * candleSlotWidth + (candleSlotWidth - candleBodyWidth) / 2;
-                  const maxVol = 1200;
+                  const maxVol = Math.max(maxCandleVolume, Number.EPSILON);
                   const volHeight = (c.volume / maxVol) * 45;
                   const y = padding.top + plotHeight - volHeight;
                   const isBull = c.close >= c.open;
@@ -808,7 +826,7 @@ export const ForexChart: React.FC<ForexChartProps> = ({ selectedSymbol, onSelect
                       </g>
                     );
                   })
-                ) : (
+                ) : candleCount > 0 ? (
                   /* Area Chart Mode */
                   <>
                     <path
@@ -831,6 +849,23 @@ export const ForexChart: React.FC<ForexChartProps> = ({ selectedSymbol, onSelect
                       strokeWidth="1.8"
                     />
                   </>
+                ) : null}
+
+                {candleCount === 0 && (
+                  <text
+                    x={padding.left + plotWidth / 2}
+                    y={padding.top + plotHeight / 2}
+                    fill="rgba(255,255,255,0.5)"
+                    fontSize="12"
+                    textAnchor="middle"
+                    fontFamily="Geist Mono, monospace"
+                  >
+                    {currentInstrument.feedSymbol
+                      ? currentFeedStatus === 'connected'
+                        ? `WAITING FOR LIVE ${currentInstrument.feedSymbol} TRADES`
+                        : `CONNECTING TO BINANCE ${currentInstrument.feedSymbol}`
+                      : 'LIVE DATA IS NOT AVAILABLE FOR THIS INSTRUMENT'}
+                  </text>
                 )}
 
                 {/* Active Open Positions Overlay Lines on Chart */}
@@ -882,7 +917,7 @@ export const ForexChart: React.FC<ForexChartProps> = ({ selectedSymbol, onSelect
                 )}
 
                 {/* Current Price Horizontal Ray */}
-                {(() => {
+                {currentPrice !== null && candleCount > 0 && (() => {
                   const curY = getY(currentPrice);
                   return (
                     <g>
@@ -982,12 +1017,12 @@ export const ForexChart: React.FC<ForexChartProps> = ({ selectedSymbol, onSelect
             {/* Bottom telemetry footer */}
             <div className="flex flex-wrap items-center justify-between pt-3 font-mono-geist text-[10px] text-white/40 border-t border-white/10 mt-3">
               <span className="flex items-center gap-2">
-                <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
-                <span>DEMO TRADING FEED // ACCURATE MARKET ENGINE</span>
+                <span className={`w-1.5 h-1.5 rounded-full ${currentFeedStatus === 'connected' ? 'bg-emerald-400' : 'bg-amber-400'}`} />
+                <span>BINANCE {currentInstrument.feedSymbol ?? 'NO LIVE FEED'} TRADE STREAM // DEMO ORDERS</span>
               </span>
               <div className="flex items-center gap-4">
                 <span>CONTRACT SIZE: <strong>{currentInstrument.contractSize} UNITS/LOT</strong></span>
-                <span>SPREAD: <strong>{currentInstrument.spreadPips} PIPS</strong></span>
+                <span>EXECUTION: <strong>LAST TRADE PRICE</strong></span>
               </div>
             </div>
           </div>
@@ -1007,15 +1042,15 @@ export const ForexChart: React.FC<ForexChartProps> = ({ selectedSymbol, onSelect
               {/* Bid / Ask Dual Cards */}
               <div className="grid grid-cols-2 gap-2 text-center">
                 <div className="bg-black border border-white/10 p-2.5">
-                  <div className="text-[10px] text-white/50 uppercase">SELL / BID</div>
+                  <div className="text-[10px] text-white/50 uppercase">SELL / LAST TRADE</div>
                   <div className="font-silkscreen text-sm text-rose-400 mt-1">
-                    {bidPrice.toFixed(currentInstrument.decimals)}
+                    {bidPrice?.toFixed(currentInstrument.decimals) ?? '--'}
                   </div>
                 </div>
                 <div className="bg-black border border-white/10 p-2.5">
-                  <div className="text-[10px] text-white/50 uppercase">BUY / ASK</div>
+                  <div className="text-[10px] text-white/50 uppercase">BUY / LAST TRADE</div>
                   <div className="font-silkscreen text-sm text-emerald-400 mt-1">
-                    {askPrice.toFixed(currentInstrument.decimals)}
+                    {askPrice?.toFixed(currentInstrument.decimals) ?? '--'}
                   </div>
                 </div>
               </div>
@@ -1073,14 +1108,16 @@ export const ForexChart: React.FC<ForexChartProps> = ({ selectedSymbol, onSelect
               <div className="grid grid-cols-2 gap-2">
                 <button
                   onClick={() => handleExecuteOrder('SELL')}
-                  className="py-3 px-2 bg-rose-600 hover:bg-rose-500 text-white font-silkscreen text-xs font-bold tracking-wider transition-colors cursor-pointer flex items-center justify-center gap-1.5 shadow-sm"
+                  disabled={currentPrice === null}
+                  className="py-3 px-2 bg-rose-600 hover:bg-rose-500 disabled:bg-neutral-800 disabled:text-white/30 disabled:cursor-not-allowed text-white font-silkscreen text-xs font-bold tracking-wider transition-colors cursor-pointer flex items-center justify-center gap-1.5 shadow-sm"
                 >
                   <ArrowDownRight className="w-4 h-4" />
                   <span>SELL MARKET</span>
                 </button>
                 <button
                   onClick={() => handleExecuteOrder('BUY')}
-                  className="py-3 px-2 bg-emerald-600 hover:bg-emerald-500 text-white font-silkscreen text-xs font-bold tracking-wider transition-colors cursor-pointer flex items-center justify-center gap-1.5 shadow-sm"
+                  disabled={currentPrice === null}
+                  className="py-3 px-2 bg-emerald-600 hover:bg-emerald-500 disabled:bg-neutral-800 disabled:text-white/30 disabled:cursor-not-allowed text-white font-silkscreen text-xs font-bold tracking-wider transition-colors cursor-pointer flex items-center justify-center gap-1.5 shadow-sm"
                 >
                   <ArrowUpRight className="w-4 h-4" />
                   <span>BUY MARKET</span>
@@ -1091,12 +1128,12 @@ export const ForexChart: React.FC<ForexChartProps> = ({ selectedSymbol, onSelect
             {/* Quick Metrics */}
             <div className="border-t border-white/10 pt-3 space-y-1.5 text-xs">
               <div className="flex justify-between text-[11px]">
-                <span className="text-white/50">24H HIGH:</span>
-                <span className="text-white font-medium">{maxPrice.toFixed(currentInstrument.decimals)}</span>
+                <span className="text-white/50">SESSION HIGH:</span>
+                <span className="text-white font-medium">{candles.length ? maxPrice.toFixed(currentInstrument.decimals) : '--'}</span>
               </div>
               <div className="flex justify-between text-[11px]">
-                <span className="text-white/50">24H LOW:</span>
-                <span className="text-white font-medium">{minPrice.toFixed(currentInstrument.decimals)}</span>
+                <span className="text-white/50">SESSION LOW:</span>
+                <span className="text-white font-medium">{candles.length ? minPrice.toFixed(currentInstrument.decimals) : '--'}</span>
               </div>
             </div>
 

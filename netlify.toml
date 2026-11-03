@@ -1,0 +1,17 @@
+[build]
+  command = "npm run build"
+  publish = "dist"
+  functions = "netlify/functions"
+
+[dev]
+  command = "npm run dev"
+  targetPort = 3000
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    Content-Security-Policy = "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; script-src 'self' 'unsafe-eval' https://s3.tradingview.com 'sha256-E7Nyo7tA2UfJnQUT5FnFYu7wiMRZfls2RQVEMpJddfs=' 'sha256-5REeu98zK6Nf0nUpX13rJpbh3Wnq9L8H1gVdpW0s1bg='; worker-src 'self' blob:; style-src 'self' https://fonts.googleapis.com; style-src-attr 'unsafe-inline'; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob:; frame-src 'self' https://*.tradingview.com https://*.tradingview-widget.com; connect-src 'self' https://api.twelvedata.com https://api.binance.com wss://stream.binance.com https://*.tradingview.com wss://*.tradingview.com https://ep-lingering-bread-a1r5wnr5.neonauth.ap-southeast-1.aws.neon.tech; upgrade-insecure-requests"
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+    X-Frame-Options = "DENY"
+    Permissions-Policy = "camera=(), microphone=(), geolocation=()"

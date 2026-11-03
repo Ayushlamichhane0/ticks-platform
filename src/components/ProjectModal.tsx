@@ -1,6 +1,6 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, ExternalLink, Github, Check } from 'lucide-react';
+import { X, Github } from 'lucide-react';
 import { Project } from '../types/project';
 
 interface ProjectModalProps {
@@ -9,8 +9,6 @@ interface ProjectModalProps {
 }
 
 export const ProjectModal: React.FC<ProjectModalProps> = ({ project, onClose }) => {
-  const [launchedNotice, setLaunchedNotice] = useState(false);
-
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose();
@@ -121,17 +119,8 @@ export const ProjectModal: React.FC<ProjectModalProps> = ({ project, onClose }) 
               className="py-2.5 px-5 border border-white/20 text-white hover:border-white uppercase tracking-wider transition-all flex items-center gap-1.5"
             >
               <Github className="h-3.5 w-3.5" />
-              <span>GitHub</span>
+              <span>View Source on GitHub</span>
             </a>
-            <button
-              onClick={() => {
-                setLaunchedNotice(true);
-                setTimeout(() => setLaunchedNotice(false), 2500);
-              }}
-              className="py-2.5 px-6 bg-white text-black font-bold uppercase tracking-wider hover:bg-neutral-200 transition-all cursor-pointer"
-            >
-              {launchedNotice ? 'DEMO ACTIVE' : 'OPEN DEMO'}
-            </button>
           </div>
         </motion.div>
       </div>

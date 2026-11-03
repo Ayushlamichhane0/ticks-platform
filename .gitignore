@@ -6,3 +6,8 @@ coverage/
 *.log
 .env*
 !.env.example
+
+# Local Netlify folder
+.netlify
+.neon
+postgresql://neondb_owner:npg_D9HryPSulGA2@ep-lingering-bread-a1r5wnr5-pooler.ap-southeast-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require

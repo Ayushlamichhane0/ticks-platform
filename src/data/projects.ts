@@ -16,8 +16,7 @@ export const PROJECTS: Project[] = [
       { label: 'Win Rate', value: '68.4%' },
       { label: 'Sharpe Ratio', value: '1.85' },
     ],
-    demoUrl: '#demo-trading-bot',
-    githubUrl: 'https://github.com/ayush/algonavigator-bot',
+    githubUrl: 'https://github.com/',
     featured: true,
     highlights: [
       'Sub-20ms tick-to-trade signal pipeline',
@@ -40,8 +39,7 @@ export const PROJECTS: Project[] = [
       { label: 'Refresh', value: '60s' },
       { label: 'Stations', value: '1,400+' },
     ],
-    demoUrl: '#demo-weather-app',
-    githubUrl: 'https://github.com/ayush/meteosat-weather',
+    githubUrl: 'https://github.com/',
     featured: true,
     highlights: [
       'Interactive 24-hour temperature curve with spline interpolation',
@@ -64,8 +62,7 @@ export const PROJECTS: Project[] = [
       { label: 'Throughput', value: '1,250 req/s' },
       { label: 'Error Rate', value: '0.1%' },
     ],
-    demoUrl: '#demo-dev-toolkit',
-    githubUrl: 'https://github.com/ayush/hyperapi-workbench',
+    githubUrl: 'https://github.com/',
     featured: true,
     highlights: [
       'Concurrent load generator with virtual user throttling',
@@ -88,8 +85,7 @@ export const PROJECTS: Project[] = [
       { label: 'Order Depth', value: '200 levels' },
       { label: 'Uptime', value: '99.99%' },
     ],
-    demoUrl: '#demo-ticker-pulse',
-    githubUrl: 'https://github.com/ayush/ticker-pulse',
+    githubUrl: 'https://github.com/',
     featured: false,
     highlights: [
       'Real-time orderbook heatmaps with depth accumulation curves',

@@ -13,6 +13,7 @@ export const ContactModal: React.FC<ContactModalProps> = ({ isOpen, onClose }) =
   const [message, setMessage] = useState('');
   const [submitted, setSubmitted] = useState(false);
   const [error, setError] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -28,14 +29,36 @@ export const ContactModal: React.FC<ContactModalProps> = ({ isOpen, onClose }) =
     };
   }, [isOpen, onClose]);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     if (!name.trim() || !email.trim() || !message.trim()) {
       setError('PLEASE FILL IN ALL FIELDS');
       return;
     }
     setError('');
-    setSubmitted(true);
+    setIsSubmitting(true);
+
+    try {
+      const response = await fetch('/.netlify/functions/contact', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, email, message }),
+      });
+
+      if (response.status !== 200) {
+        throw new Error(`MESSAGE FAILED TO SEND (HTTP ${response.status})`);
+      }
+
+      setSubmitted(true);
+    } catch (submitError) {
+      setError(
+        submitError instanceof Error
+          ? submitError.message
+          : 'MESSAGE FAILED TO SEND. PLEASE TRY AGAIN.'
+      );
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   const handleReset = () => {
@@ -91,7 +114,7 @@ export const ContactModal: React.FC<ContactModalProps> = ({ isOpen, onClose }) =
               </p>
 
               {error && (
-                <div className="mt-4 border border-white/40 bg-white/10 p-2.5 text-xs text-white font-silkscreen">
+                <div role="alert" className="mt-4 border border-rose-500 bg-rose-950/60 p-2.5 text-xs text-rose-200 font-silkscreen">
                   {error}
                 </div>
               )}
@@ -106,6 +129,7 @@ export const ContactModal: React.FC<ContactModalProps> = ({ isOpen, onClose }) =
                     type="text"
                     value={name}
                     onChange={(e) => setName(e.target.value)}
+                    required
                     placeholder="Ayush or Organization"
                     className="w-full border border-white/15 bg-black p-3 text-white placeholder-white/30 focus:border-white focus:outline-none"
                   />
@@ -120,6 +144,7 @@ export const ContactModal: React.FC<ContactModalProps> = ({ isOpen, onClose }) =
                     type="email"
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
+                    required
                     placeholder="yourname@domain.com"
                     className="w-full border border-white/15 bg-black p-3 text-white placeholder-white/30 focus:border-white focus:outline-none"
                   />
@@ -134,6 +159,7 @@ export const ContactModal: React.FC<ContactModalProps> = ({ isOpen, onClose }) =
                     rows={3}
                     value={message}
                     onChange={(e) => setMessage(e.target.value)}
+                    required
                     placeholder="Let's build something fast and clean..."
                     className="w-full border border-white/15 bg-black p-3 text-white placeholder-white/30 focus:border-white focus:outline-none"
                   />
@@ -149,9 +175,10 @@ export const ContactModal: React.FC<ContactModalProps> = ({ isOpen, onClose }) =
                   </button>
                   <button
                     type="submit"
-                    className="py-2.5 px-6 bg-white text-black font-bold uppercase tracking-wider hover:bg-neutral-200 transition-all cursor-pointer"
+                    disabled={isSubmitting}
+                    className="py-2.5 px-6 bg-white text-black font-bold uppercase tracking-wider hover:bg-neutral-200 transition-all cursor-pointer disabled:cursor-wait disabled:opacity-60"
                   >
-                    SEND MESSAGE
+                    {isSubmitting ? 'SENDING...' : 'SEND MESSAGE'}
                   </button>
                 </div>
               </form>

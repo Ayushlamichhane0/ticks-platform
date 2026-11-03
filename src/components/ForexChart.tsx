@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { lazy, Suspense, useState, useEffect, useMemo, useRef } from 'react';
+import toast from 'react-hot-toast';
 import {
   TrendingUp,
   TrendingDown,
@@ -10,16 +11,22 @@ import {
   ArrowDownRight,
   DollarSign,
   ShieldAlert,
-  CheckCircle2,
-  XCircle,
-  Zap,
   RotateCcw,
   Clock,
   Layers,
   Sparkles,
-  Info
+  Info,
+  Loader2
 } from 'lucide-react';
-import { useMarketStore } from '../store/useMarketStore';
+import { getViewAsHeaders, useMarketStore } from '../store/useMarketStore';
+import { useTradingStore } from '../store/useTradingStore';
+import { buildPositions } from '../store/positions';
+import { MARKET_INSTRUMENTS } from '../constants/market';
+import type { MarketInstrument } from '../constants/market';
+
+const TradingPriceChart = lazy(() =>
+  import('./TradingPriceChart').then((module) => ({ default: module.TradingPriceChart }))
+);
 
 export interface Candle {
   timeStr: string;       // Formatted time string for axis/tooltip
@@ -32,31 +39,26 @@ export interface Candle {
   volume: number;
 }
 
-export interface MarketInstrument {
-  symbol: string;
-  name: string;
-  feedSymbol?: 'BTC/USDT' | 'PAXG/USDT';
-  pipSize: number;       // Point precision step
-  decimals: number;
-  contractSize: number;  // Units per 1.0 Lot (e.g. 100 for Gold, 1 for BTC, 100,000 for Forex)
-  category: 'Metals & Commodities' | 'Crypto' | 'Forex Major' | 'Global Stocks';
-  icon: string;
-}
-
-export const MARKET_INSTRUMENTS: MarketInstrument[] = [
-  { symbol: 'GOLD', name: 'PAX Gold / US Dollar (gold-backed token)', feedSymbol: 'PAXG/USDT', pipSize: 0.10, decimals: 2, contractSize: 1, category: 'Metals & Commodities', icon: '🥇' },
-  { symbol: 'BTC/USD', name: 'Bitcoin / US Dollar (Binance BTC/USDT)', pipSize: 1.00, decimals: 2, contractSize: 1, category: 'Crypto', icon: '₿' },
-  { symbol: 'ETH/USD', name: 'Ethereum / US Dollar', pipSize: 0.10, decimals: 2, contractSize: 10, category: 'Crypto', icon: 'Ξ' },
-  { symbol: 'SILVER', name: 'Silver Spot / US Dollar (XAG/USD)', pipSize: 0.01, decimals: 3, contractSize: 5000, category: 'Metals & Commodities', icon: '🥈' },
-  { symbol: 'EUR/USD', name: 'Euro / US Dollar', pipSize: 0.0001, decimals: 5, contractSize: 100000, category: 'Forex Major', icon: '€' },
-  { symbol: 'GBP/USD', name: 'British Pound / USD', pipSize: 0.0001, decimals: 5, contractSize: 100000, category: 'Forex Major', icon: '£' },
-  { symbol: 'USD/JPY', name: 'US Dollar / Yen', pipSize: 0.01, decimals: 3, contractSize: 100000, category: 'Forex Major', icon: '¥' },
-  { symbol: 'NVDA', name: 'NVIDIA Corporation', pipSize: 0.01, decimals: 2, contractSize: 100, category: 'Global Stocks', icon: '🟢' },
-  { symbol: 'AAPL', name: 'Apple Inc.', pipSize: 0.01, decimals: 2, contractSize: 100, category: 'Global Stocks', icon: '🍎' },
-];
-
 export const TIMEFRAMES = ['1M', '5M', '15M', '1H', '4H', '1D'] as const;
 export type Timeframe = typeof TIMEFRAMES[number];
+
+const BINANCE_INTERVALS: Record<Timeframe, string> = {
+  '1M': '1m',
+  '5M': '5m',
+  '15M': '15m',
+  '1H': '1h',
+  '4H': '4h',
+  '1D': '1d',
+};
+
+const TWELVE_DATA_INTERVALS: Record<Timeframe, string> = {
+  '1M': '1min',
+  '5M': '5min',
+  '15M': '15min',
+  '1H': '1h',
+  '4H': '4h',
+  '1D': '1day',
+};
 
 export interface OpenPosition {
   id: string;
@@ -86,22 +88,63 @@ export interface TradeHistoryItem {
   reason: 'MANUAL' | 'TAKE_PROFIT' | 'STOP_LOSS';
 }
 
-interface ForexChartProps {
-  selectedSymbol?: string;
-  onSelectSymbol?: (symbol: string) => void;
+async function submitTradeClose(getAccessToken: () => Promise<string>, tradeId: string, exitPrice: number) {
+  const response = await fetch('/.netlify/functions/trade', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${await getAccessToken()}`,
+      ...getViewAsHeaders(),
+    },
+    body: JSON.stringify({
+      action: 'close',
+      tradeId: Number(tradeId),
+      exitPrice,
+    }),
+  });
+  const result = await response.json() as {
+    success?: boolean;
+    message?: string;
+    demoBalance?: number;
+    realizedPnl?: number;
+  };
+
+  if (
+    response.status !== 200 ||
+    !result.success ||
+    typeof result.demoBalance !== 'number' ||
+    typeof result.realizedPnl !== 'number'
+  ) {
+    throw new Error(result.message || `Trade close failed (${response.status})`);
+  }
+
+  return { demoBalance: result.demoBalance, realizedPnl: result.realizedPnl };
 }
 
-// Helper to get time step in ms
-function getTimeStepMs(tf: Timeframe): number {
-  switch (tf) {
-    case '1M': return 60 * 1000;
-    case '5M': return 5 * 60 * 1000;
-    case '15M': return 15 * 60 * 1000;
-    case '1H': return 60 * 60 * 1000;
-    case '4H': return 4 * 60 * 60 * 1000;
-    case '1D': return 24 * 60 * 60 * 1000;
-    default: return 5 * 60 * 1000;
+async function submitAccountAction(
+  getAccessToken: () => Promise<string>,
+  action: 'balance' | 'reset'
+) {
+  const response = await fetch('/.netlify/functions/trade', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${await getAccessToken()}`,
+      ...getViewAsHeaders(),
+    },
+    body: JSON.stringify({ action }),
+  });
+  const result = await response.json() as {
+    success?: boolean;
+    message?: string;
+    demoBalance?: number;
+  };
+
+  if (response.status !== 200 || !result.success || typeof result.demoBalance !== 'number') {
+    throw new Error(result.message || `Account request failed (${response.status})`);
   }
+
+  return result.demoBalance;
 }
 
 function createCandleTime(timestamp: number, timeframe: Timeframe) {
@@ -122,120 +165,271 @@ function createCandleTime(timestamp: number, timeframe: Timeframe) {
   };
 }
 
-export const ForexChart: React.FC<ForexChartProps> = ({ selectedSymbol, onSelectSymbol }) => {
-  const marketState = useMarketStore();
+function updateLatestCandlePrice(existingCandles: Candle[], price: number): Candle[] {
+  const latest = existingCandles[existingCandles.length - 1];
+  if (!latest || !Number.isFinite(price) || price <= 0) return existingCandles;
+  return [
+    ...existingCandles.slice(0, -1),
+    {
+      ...latest,
+      high: Math.max(latest.high, price),
+      low: Math.min(latest.low, price),
+      close: price,
+    },
+  ];
+}
+
+function parseBinanceKlines(payload: unknown, timeframe: Timeframe): Candle[] {
+  if (!Array.isArray(payload)) {
+    throw new Error('Binance historical response was not a candle list.');
+  }
+
+  return payload.map((row): Candle => {
+    if (!Array.isArray(row) || row.length < 6) {
+      throw new Error('Binance returned an invalid historical candle.');
+    }
+
+    const timestamp = Number(row[0]);
+    const open = Number(row[1]);
+    const high = Number(row[2]);
+    const low = Number(row[3]);
+    const close = Number(row[4]);
+    const volume = Number(row[5]);
+    if (!Number.isFinite(timestamp) || ![open, high, low, close, volume].every(Number.isFinite)) {
+      throw new Error('Binance returned non-numeric historical candle data.');
+    }
+
+    const { dateStr, timeStr } = createCandleTime(timestamp, timeframe);
+    return { timeStr, dateStr, timestamp, open, high, low, close, volume };
+  }).sort((a, b) => a.timestamp - b.timestamp);
+}
+
+function parseGoldHistory(payload: unknown, timeframe: Timeframe): Candle[] {
+  if (payload === null || typeof payload !== 'object' || !('candles' in payload) || !Array.isArray(payload.candles)) {
+    throw new Error('Historical gold response did not contain candles.');
+  }
+
+  const parsedCandles = payload.candles.slice().reverse().map((item): Candle => {
+    if (item === null || typeof item !== 'object' || !('time' in item)) {
+      throw new Error('Twelve Data returned an invalid historical gold candle.');
+    }
+
+    const candle = item as Record<string, unknown>;
+    const timestampSeconds = Number(candle.time);
+    const timestamp = timestampSeconds * 1000;
+    const open = parseFloat(String(candle.open));
+    const high = parseFloat(String(candle.high));
+    const low = parseFloat(String(candle.low));
+    const close = parseFloat(String(candle.close));
+    const volume = Number(candle.volume ?? 0);
+    if (
+      !Number.isSafeInteger(timestampSeconds) ||
+      timestampSeconds <= 0 ||
+      ![open, high, low, close, volume].every(Number.isFinite)
+    ) {
+      throw new Error('Twelve Data returned non-numeric historical gold candle data.');
+    }
+
+    const { dateStr, timeStr } = createCandleTime(timestamp, timeframe);
+    return { timeStr, dateStr, timestamp, open, high, low, close, volume };
+  }).sort((a, b) => a.timestamp - b.timestamp);
+  if (parsedCandles.length === 0) {
+    throw new Error('Twelve Data returned no historical XAU/USD candles.');
+  }
+  return parsedCandles;
+}
+
+export const ForexChart: React.FC<{ getAccessToken: () => Promise<string> }> = ({ getAccessToken }) => {
+  const selectedSymbol = useMarketStore((store) => store.selectedSymbol);
+  const timeframe = useMarketStore((store) => store.timeframe);
+  const setStoreTimeframe = useMarketStore((store) => store.setTimeframe);
+  const livePrice = useMarketStore((store) => store.livePrice);
+  const demoBalance = useMarketStore((store) => store.demoBalance);
+  const setDemoBalance = useMarketStore((store) => store.setDemoBalance);
+  const addOpenPosition = useMarketStore((store) => store.addOpenPosition);
+  const triggerTradeRefresh = useMarketStore((store) => store.triggerTradeRefresh);
+  const viewAsUserId = useMarketStore((store) => store.viewAsUserId);
+  const refreshOpenPositions = useMarketStore((store) => store.refreshOpenPositions);
+  const tradeHistory = useMarketStore((store) => store.tradeHistory);
+  const fetchTradeHistory = useMarketStore((store) => store.fetchTradeHistory);
+  const sessionOpenPrice = useMarketStore((store) => store.sessionOpenPrice);
+  const connectionStatus = useMarketStore((store) => store.status);
+  const setSelectedSymbol = useMarketStore((store) => store.setSelectedSymbol);
+  const fetchGoldHistory = useMarketStore((store) => store.fetchGoldHistory);
   // Instrument selection
   const currentInstrument = useMemo(() => {
-    if (selectedSymbol) {
-      const match = MARKET_INSTRUMENTS.find((inst) => inst.symbol.toLowerCase() === selectedSymbol.toLowerCase());
-      if (match) return match;
-    }
-    return MARKET_INSTRUMENTS[1]; // Default BTC/USD
+    return MARKET_INSTRUMENTS.find((instrument) => instrument.feedSymbol === selectedSymbol)
+      ?? MARKET_INSTRUMENTS.find((instrument) => instrument.feedSymbol === 'BTCUSDT')!;
   }, [selectedSymbol]);
 
-  const [timeframe, setTimeframe] = useState<Timeframe>('5M');
-  const [chartType, setChartType] = useState<'candlestick' | 'line'>('candlestick');
-  const [showIndicators, setShowIndicators] = useState(true);
   const [isLiveStreaming, setIsLiveStreaming] = useState(true);
 
-  // Hover Crosshair
-  const [hoverIndex, setHoverIndex] = useState<number | null>(null);
+  const trades = useTradingStore((store) => store.trades);
+  const storePrices = useTradingStore((store) => store.prices);
 
-  // DEMO ACCOUNT BALANCE & POSITIONS STATE
-  const [demoBalance, setDemoBalance] = useState<number>(() => {
-    const saved = localStorage.getItem('ticks_demo_balance');
-    return saved ? parseFloat(saved) : 100000.00;
-  });
+  const openPositions = useMemo(() => buildPositions(trades), [trades]);
+
+  const unrealizedPnl = useMemo(() => {
+    return openPositions.reduce((total, pos) => {
+      const price = storePrices[pos.symbol] ?? pos.avgPrice;
+      const posPnl =
+        pos.side === 'LONG'
+          ? (price - pos.avgPrice) * pos.size
+          : (pos.avgPrice - price) * pos.size;
+      return total + posPnl;
+    }, 0);
+  }, [openPositions, storePrices]);
+
+  const totalEquity = (demoBalance ?? 0) + unrealizedPnl;
 
   const [positions, setPositions] = useState<OpenPosition[]>([]);
   const [history, setHistory] = useState<TradeHistoryItem[]>([]);
   const [orderLots, setOrderLots] = useState<number>(1.0);
   const [orderTP, setOrderTP] = useState<string>('');
   const [orderSL, setOrderSL] = useState<string>('');
-  const [tradeNotification, setTradeNotification] = useState<string | null>(null);
+  const [executingSide, setExecutingSide] = useState<'BUY' | 'SELL' | null>(null);
+  const [isTradeHistoryOpen, setIsTradeHistoryOpen] = useState(false);
+  const [isTradeHistoryLoading, setIsTradeHistoryLoading] = useState(false);
+  const [tradeHistoryError, setTradeHistoryError] = useState<string | null>(null);
+  const pendingCloseIds = useRef(new Set<string>());
+  const executingOrderRef = useRef(false);
   const [activeTab, setActiveTab] = useState<'terminal' | 'positions' | 'history'>('terminal');
 
-  // Save balance to localStorage
-  useEffect(() => {
-    localStorage.setItem('ticks_demo_balance', demoBalance.toString());
-  }, [demoBalance]);
-
-  // Candle series
-  const [candles, setCandles] = useState<Candle[]>([]);
-  const lastProcessedTradeId = useRef(0);
-
-  // Only live Binance trades are used to build chart candles.
-  useEffect(() => {
-    setCandles([]);
-    setHoverIndex(null);
-    lastProcessedTradeId.current = 0;
-  }, [currentInstrument, timeframe]);
-
-  // Handle instrument change
-  const handleInstrumentSelect = (inst: MarketInstrument) => {
-    if (onSelectSymbol) {
-      onSelectSymbol(inst.symbol);
+  const openTradeHistory = async () => {
+    setIsTradeHistoryOpen(true);
+    setIsTradeHistoryLoading(true);
+    setTradeHistoryError(null);
+    try {
+      await fetchTradeHistory(await getAccessToken());
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Trade history is unavailable.';
+      setTradeHistoryError(message);
+      toast.error(message);
+    } finally {
+      setIsTradeHistoryLoading(false);
     }
   };
 
-  // Aggregate Binance trades into candles and update demo positions.
   useEffect(() => {
-    if (
-      !isLiveStreaming ||
-      (currentInstrument.symbol !== 'BTC/USD' && currentInstrument.symbol !== 'GOLD')
-    ) {
-      return;
-    }
-
-    const stepMs = getTimeStepMs(timeframe);
-    const sourceTrades = currentInstrument.symbol === 'BTC/USD'
-      ? marketState.btcTrades
-      : marketState.goldTrades;
-    const newTrades = sourceTrades.filter((trade) => trade.id > lastProcessedTradeId.current);
-
-    if (newTrades.length > 0) {
-      setCandles((previousCandles) => {
-        let nextCandles = [...previousCandles];
-
-        for (const trade of newTrades) {
-          const bucketTime = Math.floor(trade.timestamp / stepMs) * stepMs;
-          const { dateStr, timeStr } = createCandleTime(bucketTime, timeframe);
-          const lastCandle = nextCandles[nextCandles.length - 1];
-
-          if (lastCandle?.timestamp === bucketTime) {
-            nextCandles[nextCandles.length - 1] = {
-              ...lastCandle,
-              high: Math.max(lastCandle.high, trade.price),
-              low: Math.min(lastCandle.low, trade.price),
-              close: trade.price,
-              volume: lastCandle.volume + trade.quantity,
-            };
-          } else {
-            nextCandles = [
-              ...nextCandles.slice(-47),
-              {
-                timeStr,
-                dateStr,
-                timestamp: bucketTime,
-                open: trade.price,
-                high: trade.price,
-                low: trade.price,
-                close: trade.price,
-                volume: trade.quantity,
-              },
-            ];
-          }
-        }
-
-        return nextCandles;
+    let active = true;
+    void submitAccountAction(getAccessToken, 'balance')
+      .then((balance) => {
+        if (active) setDemoBalance(balance);
+      })
+      .catch((error: unknown) => {
+        if (active) toast.error(error instanceof Error ? error.message : 'Unable to load demo balance.');
       });
-      lastProcessedTradeId.current = newTrades[newTrades.length - 1].id;
-    }
 
-    const price = currentInstrument.symbol === 'BTC/USD'
-      ? marketState.btcPrice
-      : marketState.goldPrice;
+    return () => {
+      active = false;
+    };
+  }, [getAccessToken, viewAsUserId]);
+
+  useEffect(() => {
+    if (!viewAsUserId) return;
+    let active = true;
+
+    void getAccessToken()
+      .then((accessToken) => refreshOpenPositions(accessToken))
+      .then((accountPositions) => {
+        if (!active) return;
+        setPositions(accountPositions.map((position) => {
+          const instrument = MARKET_INSTRUMENTS.find(
+            (marketInstrument) => marketInstrument.feedSymbol === position.symbol
+          );
+          return {
+            id: position.id,
+            symbol: instrument?.symbol ?? position.symbol,
+            type: position.side === 'buy' ? 'BUY' : 'SELL',
+            lots: position.amount,
+            entryPrice: position.price,
+            currentPrice: position.price,
+            tp: null,
+            sl: null,
+            pnl: 0,
+            contractSize: position.contractSize,
+            decimals: instrument?.decimals ?? currentInstrument.decimals,
+            openTimestamp: new Date(position.createdAt).toLocaleTimeString(),
+          };
+        }));
+      })
+      .catch((error: unknown) => {
+        if (active) toast.error(error instanceof Error ? error.message : 'Unable to load viewed account positions.');
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [currentInstrument.decimals, getAccessToken, refreshOpenPositions, viewAsUserId]);
+
+  // Candle series
+  const [candles, setCandles] = useState<Candle[]>([]);
+
+  useEffect(() => {
+    setCandles([]);
+
+    const controller = new AbortController();
+    let active = true;
+    const loadHistoricalCandles = async () => {
+      try {
+        const isSpotGold = selectedSymbol === 'XAUUSD';
+        let payload: unknown;
+        if (isSpotGold) {
+          payload = await fetchGoldHistory(TWELVE_DATA_INTERVALS[timeframe], controller.signal);
+        } else {
+          const query = new URLSearchParams({
+            symbol: selectedSymbol,
+            interval: BINANCE_INTERVALS[timeframe],
+            limit: '100',
+          });
+          const response = await fetch(
+            `https://api.binance.com/api/v3/klines?${query.toString()}`,
+            { signal: controller.signal }
+          );
+          if (!response.ok) {
+            const errorBody = await response.text();
+            console.error(`Historical ${selectedSymbol} candle request failed.`, {
+              status: response.status,
+              response: errorBody,
+            });
+            throw new Error(`Historical ${selectedSymbol} candle request failed with HTTP ${response.status}.`);
+          }
+          payload = await response.json();
+        }
+        const historicalCandles = isSpotGold
+          ? parseGoldHistory(payload, timeframe)
+          : parseBinanceKlines(payload, timeframe);
+        if (!active) return;
+
+        const latestLivePrice = useMarketStore.getState().livePrice;
+        const withCurrentPrice = latestLivePrice === null
+          ? historicalCandles
+          : updateLatestCandlePrice(historicalCandles, latestLivePrice);
+        setCandles(withCurrentPrice.slice(-100));
+      } catch (error) {
+        if (controller.signal.aborted) return;
+        console.error(`Unable to load ${selectedSymbol} historical candles.`, error);
+      }
+    };
+
+    void loadHistoricalCandles();
+    return () => {
+      active = false;
+      controller.abort();
+    };
+  }, [selectedSymbol, timeframe, fetchGoldHistory]);
+
+  // Handle instrument change.
+  const handleInstrumentSelect = (inst: MarketInstrument) => {
+    if (inst.feedSymbol) setSelectedSymbol(inst.feedSymbol);
+  };
+
+  useEffect(() => {
+    if (!isLiveStreaming) return;
+    const price = livePrice;
     if (price === null) return;
+
+    setCandles((previousCandles) => updateLatestCandlePrice(previousCandles, price));
 
     setPositions((previousPositions) =>
       previousPositions.map((position) => {
@@ -264,201 +458,252 @@ export const ForexChart: React.FC<ForexChartProps> = ({ selectedSymbol, onSelect
       })
     );
   }, [
-    currentInstrument.symbol,
     isLiveStreaming,
-    marketState.btcPrice,
-    marketState.btcTrades,
-    marketState.goldPrice,
-    marketState.goldTrades,
+    currentInstrument.symbol,
+    livePrice,
+    selectedSymbol,
     timeframe,
   ]);
 
   // Current Market metrics
-  const isBtcInstrument = currentInstrument.symbol === 'BTC/USD';
-  const isGoldInstrument = currentInstrument.symbol === 'GOLD';
-  const currentPrice = isBtcInstrument
-    ? marketState.btcPrice
-    : isGoldInstrument ? marketState.goldPrice : null;
-  const sessionOpenPrice = isBtcInstrument
-    ? marketState.btcSessionOpenPrice
-    : isGoldInstrument ? marketState.goldSessionOpenPrice : null;
-  const currentFeedStatus = isBtcInstrument
-    ? marketState.btcStatus
-    : isGoldInstrument ? marketState.goldStatus : 'disconnected';
-  const priceChange = currentPrice !== null && sessionOpenPrice !== null
-    ? +(currentPrice - sessionOpenPrice).toFixed(currentInstrument.decimals)
+  const currentFeedStatus = connectionStatus;
+  const priceChange = livePrice !== null && sessionOpenPrice !== null
+    ? +(livePrice - sessionOpenPrice).toFixed(currentInstrument.decimals)
     : null;
   const priceChangePct = priceChange !== null && sessionOpenPrice
     ? +((priceChange / sessionOpenPrice) * 100).toFixed(2)
     : null;
   const isPositive = (priceChange ?? 0) >= 0;
 
-  const bidPrice = currentPrice;
-  const askPrice = currentPrice;
+  const bidPrice = livePrice;
+  const askPrice = livePrice;
 
   // Compute total unrealized floating PnL
   const totalFloatingPnl = useMemo(() => {
     return +(positions.reduce((acc, pos) => acc + pos.pnl, 0)).toFixed(2);
   }, [positions]);
 
-  const equity = +(demoBalance + totalFloatingPnl).toFixed(2);
+  const equity = +((demoBalance ?? 0) + totalFloatingPnl).toFixed(2);
+  const sessionCandleHigh = candles.length > 0
+    ? candles.reduce((high, candle) => Math.max(high, candle.high), -Infinity)
+    : null;
+  const sessionCandleLow = candles.length > 0
+    ? candles.reduce((low, candle) => Math.min(low, candle.low), Infinity)
+    : null;
 
   // Auto trigger closing position for TP/SL
   const triggerAutoClose = (pos: OpenPosition, exitPrice: number, reason: 'TAKE_PROFIT' | 'STOP_LOSS', finalPnl: number) => {
-    setPositions((prev) => prev.filter((p) => p.id !== pos.id));
-    setDemoBalance((prev) => +(prev + finalPnl).toFixed(2));
-    
-    const nowStr = new Date().toLocaleTimeString();
-    setHistory((prev) => [
-      {
-        id: pos.id,
-        symbol: pos.symbol,
-        type: pos.type,
-        lots: pos.lots,
-        entryPrice: pos.entryPrice,
-        exitPrice,
-        pnl: finalPnl,
-        openTimestamp: pos.openTimestamp,
-        closeTimestamp: nowStr,
-        reason,
-      },
-      ...prev,
-    ]);
+    if (viewAsUserId) return;
+    if (pendingCloseIds.current.has(pos.id)) return;
+    pendingCloseIds.current.add(pos.id);
 
-    setTradeNotification(`AUTO-CLOSED ${pos.symbol} [${reason}] // PnL: ${finalPnl >= 0 ? '+' : ''}$${finalPnl}`);
-    setTimeout(() => setTradeNotification(null), 5000);
+    void submitTradeClose(getAccessToken, pos.id, exitPrice).then(({ demoBalance: balance, realizedPnl }) => {
+      setPositions((prev) => prev.filter((position) => position.id !== pos.id));
+      setDemoBalance(balance);
+      triggerTradeRefresh();
+      const nowStr = new Date().toLocaleTimeString();
+      setHistory((prev) => [
+        {
+          id: pos.id,
+          symbol: pos.symbol,
+          type: pos.type,
+          lots: pos.lots,
+          entryPrice: pos.entryPrice,
+          exitPrice,
+          pnl: realizedPnl,
+          openTimestamp: pos.openTimestamp,
+          closeTimestamp: nowStr,
+          reason,
+        },
+        ...prev,
+      ]);
+      toast.success(`Auto-closed ${pos.symbol} [${reason}] // P&L: ${realizedPnl >= 0 ? '+' : ''}$${realizedPnl}`);
+    }).catch((error: unknown) => {
+      pendingCloseIds.current.delete(pos.id);
+      toast.error(error instanceof Error ? error.message : 'Trade close failed; position remains open.');
+    });
   };
 
-  // Execute Market Order (BUY / SELL) with Demo Money
-  const handleExecuteOrder = (side: 'BUY' | 'SELL') => {
+  // Submit a mock backend trade, then reflect the successful order in the demo account.
+  const handleExecuteOrder = async (side: 'BUY' | 'SELL') => {
+    if (viewAsUserId) return;
     const execPrice = side === 'BUY' ? askPrice : bidPrice;
-    if (execPrice === null) return;
-    const tpVal = orderTP ? parseFloat(orderTP) : null;
-    const slVal = orderSL ? parseFloat(orderSL) : null;
-    
-    const newPos: OpenPosition = {
-      id: crypto.randomUUID(),
-      symbol: currentInstrument.symbol,
-      type: side,
-      lots: orderLots,
-      entryPrice: execPrice,
-      currentPrice: execPrice,
-      tp: tpVal,
-      sl: slVal,
-      pnl: 0.00,
-      contractSize: currentInstrument.contractSize,
-      decimals: currentInstrument.decimals,
-      openTimestamp: new Date().toLocaleTimeString(),
-    };
+    if (execPrice === null || executingOrderRef.current) return;
+    const amount = Number(orderLots);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      console.error('Trade amount must be a positive finite number.', { amount: orderLots });
+      return;
+    }
 
-    setPositions((prev) => [newPos, ...prev]);
-    setTradeNotification(`EXECUTED // DEMO ${side} ${orderLots} LOTS ${currentInstrument.symbol} @ ${execPrice}`);
-    setTimeout(() => setTradeNotification(null), 4000);
+    const requestBody = {
+      action: 'open',
+      symbol: selectedSymbol,
+      amount,
+      price: execPrice,
+      side: side.toLowerCase(),
+    };
+    console.log('SENDING TRADE:', {
+      symbol: requestBody.symbol,
+      side: requestBody.side,
+      amount: requestBody.amount,
+      price: requestBody.price,
+    });
+    executingOrderRef.current = true;
+    setExecutingSide(side);
+
+    try {
+      let response: Response;
+      try {
+        response = await fetch('/.netlify/functions/trade', {
+        method: 'POST',
+        headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${await getAccessToken()}`,
+        ...getViewAsHeaders(),
+        },
+          body: JSON.stringify(requestBody),
+        });
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : 'Trade failed due to a network error.');
+        return;
+      }
+      const result = await response.json() as {
+        success?: boolean;
+        message?: string;
+        error?: string;
+        tradeId?: string;
+        newBalance?: number;
+      };
+
+      if (!result || typeof result !== 'object') {
+        console.error('Trade endpoint returned an invalid JSON response.', {
+          status: response.status,
+          result,
+        });
+        return;
+      }
+
+      if (result?.success === false) {
+        if (result.error) {
+          console.error('Trade endpoint returned an error.', {
+            status: response.status,
+            error: result.error,
+          });
+        }
+        toast.error(result.message || result.error || `Trade request failed (${response.status})`);
+        return;
+      }
+
+      if (
+        response.status !== 200 ||
+        result.success !== true ||
+        typeof result.tradeId !== 'string' ||
+        typeof result.newBalance !== 'number' ||
+        !Number.isFinite(result.newBalance)
+      ) {
+        console.error('Trade endpoint returned an unexpected response.', {
+          status: response.status,
+          result,
+        });
+        return;
+      }
+
+      if (typeof result.newBalance === 'number') {
+        setDemoBalance(result.newBalance);
+      }
+      triggerTradeRefresh();
+      toast.success(`${side} order executed successfully.`);
+      const tpVal = orderTP ? parseFloat(orderTP) : null;
+      const slVal = orderSL ? parseFloat(orderSL) : null;
+      const createdAt = new Date().toISOString();
+
+      const newPos: OpenPosition = {
+        id: result.tradeId,
+        symbol: currentInstrument.symbol,
+        type: side,
+        lots: amount,
+        entryPrice: execPrice,
+        currentPrice: execPrice,
+        tp: tpVal,
+        sl: slVal,
+        pnl: 0.00,
+        contractSize: currentInstrument.contractSize,
+        decimals: currentInstrument.decimals,
+        openTimestamp: new Date(createdAt).toLocaleTimeString(),
+      };
+
+      setPositions((prev) => [newPos, ...prev]);
+      setDemoBalance(result.newBalance);
+      addOpenPosition({
+        id: result.tradeId,
+        symbol: selectedSymbol,
+        amount,
+        price: execPrice,
+        side: side === 'BUY' ? 'buy' : 'sell',
+        contractSize: currentInstrument.contractSize,
+        createdAt,
+      });
+    } catch (error) {
+      console.error('Unable to process trade response or update trade state.', error);
+    } finally {
+      executingOrderRef.current = false;
+      setExecutingSide(null);
+    }
   };
 
   // Close open position manually
-  const handleClosePosition = (pos: OpenPosition) => {
-    setPositions((prev) => prev.filter((p) => p.id !== pos.id));
-    setDemoBalance((prev) => +(prev + pos.pnl).toFixed(2));
-    
-    const nowStr = new Date().toLocaleTimeString();
-    setHistory((prev) => [
-      {
-        id: pos.id,
-        symbol: pos.symbol,
-        type: pos.type,
-        lots: pos.lots,
-        entryPrice: pos.entryPrice,
-        exitPrice: pos.currentPrice,
-        pnl: pos.pnl,
-        openTimestamp: pos.openTimestamp,
-        closeTimestamp: nowStr,
-        reason: 'MANUAL',
-      },
-      ...prev,
-    ]);
+  const handleClosePosition = async (pos: OpenPosition) => {
+    if (viewAsUserId) return;
+    if (pendingCloseIds.current.has(pos.id)) return;
+    pendingCloseIds.current.add(pos.id);
+    try {
+      const { demoBalance, realizedPnl } = await submitTradeClose(getAccessToken, pos.id, pos.currentPrice);
+      setPositions((prev) => prev.filter((position) => position.id !== pos.id));
+      setDemoBalance(demoBalance);
+      triggerTradeRefresh();
 
-    setTradeNotification(`CLOSED ${pos.symbol} // REALIZED PnL: ${pos.pnl >= 0 ? '+' : ''}$${pos.pnl}`);
-    setTimeout(() => setTradeNotification(null), 4000);
+      const nowStr = new Date().toLocaleTimeString();
+      setHistory((prev) => [
+        {
+          id: pos.id,
+          symbol: pos.symbol,
+          type: pos.type,
+          lots: pos.lots,
+          entryPrice: pos.entryPrice,
+          exitPrice: pos.currentPrice,
+          pnl: realizedPnl,
+          openTimestamp: pos.openTimestamp,
+          closeTimestamp: nowStr,
+          reason: 'MANUAL',
+        },
+        ...prev,
+      ]);
+
+      toast.success(`Closed ${pos.symbol} // realized P&L: ${realizedPnl >= 0 ? '+' : ''}$${realizedPnl}`);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Trade close failed; position remains open.');
+    } finally {
+      pendingCloseIds.current.delete(pos.id);
+    }
   };
 
   // Reset Demo Balance
-  const handleResetDemoAccount = () => {
-    setDemoBalance(100000.00);
-    setPositions([]);
-    setHistory([]);
-    setTradeNotification('DEMO ACCOUNT RESET TO $100,000.00 CASH');
-    setTimeout(() => setTradeNotification(null), 4000);
+  const handleResetDemoAccount = async () => {
+    if (viewAsUserId) return;
+    try {
+      const balance = await submitAccountAction(getAccessToken, 'reset');
+      setDemoBalance(balance);
+      setPositions([]);
+      setHistory([]);
+      toast.success('Demo account reset to $100,000.00.');
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Unable to reset demo account.');
+    }
   };
 
-  // SVG dimensions
-  const svgWidth = 840;
-  const svgHeight = 360;
-  const padding = { top: 25, right: 80, bottom: 40, left: 10 };
-  const plotWidth = svgWidth - padding.left - padding.right;
-  const plotHeight = svgHeight - padding.top - padding.bottom;
-
-  // Min / Max computation for scale
-  const { minPrice, maxPrice, priceRange } = useMemo(() => {
-    if (candles.length === 0) {
-      return { minPrice: 0, maxPrice: 0, priceRange: 1 };
-    }
-
-    let min = Infinity;
-    let max = -Infinity;
-    for (const c of candles) {
-      if (c.low < min) min = c.low;
-      if (c.high > max) max = c.high;
-    }
-    const buffer = (max - min) * 0.08 || currentInstrument.pipSize * 10;
-    return {
-      minPrice: min - buffer,
-      maxPrice: max + buffer,
-      priceRange: max - min + buffer * 2,
-    };
-  }, [candles, currentInstrument]);
-
-  const getY = (val: number) => {
-    if (priceRange === 0) return plotHeight / 2 + padding.top;
-    return padding.top + plotHeight - ((val - minPrice) / priceRange) * plotHeight;
-  };
-
-  const candleCount = candles.length;
-  const candleSlotWidth = plotWidth / Math.max(candleCount, 1);
-  const candleBodyWidth = Math.max(3, Math.min(12, candleSlotWidth * 0.65));
-  const maxCandleVolume = useMemo(
-    () => candles.reduce((maxVolume, candle) => Math.max(maxVolume, candle.volume), 0),
-    [candles]
-  );
-
-  // Compute Simple Moving Average (SMA 10)
-  const smaPoints = useMemo(() => {
-    const period = 10;
-    const points: { x: number; y: number }[] = [];
-    for (let i = period - 1; i < candles.length; i++) {
-      let sum = 0;
-      for (let j = 0; j < period; j++) {
-        sum += candles[i - j].close;
-      }
-      const avg = sum / period;
-      const x = padding.left + i * candleSlotWidth + candleSlotWidth / 2;
-      const y = getY(avg);
-      points.push({ x, y });
-    }
-    return points;
-  }, [candles, candleSlotWidth, minPrice, priceRange]);
-
-  const smaPath = useMemo(() => {
-    if (smaPoints.length === 0) return '';
-    return smaPoints.map((pt, idx) => `${idx === 0 ? 'M' : 'L'} ${pt.x.toFixed(1)} ${pt.y.toFixed(1)}`).join(' ');
-  }, [smaPoints]);
-
-  const activeCandle = hoverIndex !== null && candles[hoverIndex]
-    ? candles[hoverIndex]
-    : candles[candles.length - 1];
 
   return (
-    <section id="forex" className="w-full py-10 sm:py-14 border-b border-white/10">
+    <section id="forex" className="w-full min-w-0 overflow-hidden py-10 sm:py-14 border-b border-white/10">
       
       {/* Top Header & Section Title */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-4 mb-6 border-b border-white/10 gap-3">
@@ -472,7 +717,11 @@ export const ForexChart: React.FC<ForexChartProps> = ({ selectedSymbol, onSelect
               ? 'text-emerald-400 border-emerald-500/30 bg-emerald-500/10'
               : 'text-amber-400 border-amber-500/30 bg-amber-500/10'
           }`}>
-            BINANCE {currentInstrument.feedSymbol ?? 'NO LIVE FEED'} // {currentFeedStatus.toUpperCase()}
+            {currentFeedStatus === 'connected'
+              ? `LIVE: ${selectedSymbol === 'XAUUSD' ? 'GOLD API' : 'REST POLLING'}`
+              : `${selectedSymbol === 'XAUUSD' ? 'GOLD API' : 'REST POLLING'} ${currentFeedStatus.toUpperCase()}`}
+            {' // '}
+            {currentInstrument.feedSymbol ?? 'NO LIVE FEED'}
           </span>
         </div>
 
@@ -482,7 +731,7 @@ export const ForexChart: React.FC<ForexChartProps> = ({ selectedSymbol, onSelect
             {TIMEFRAMES.map((tf) => (
               <button
                 key={tf}
-                onClick={() => setTimeframe(tf)}
+                onClick={() => setStoreTimeframe(tf)}
                 className={`px-2 py-1 text-[11px] font-silkscreen transition-all cursor-pointer ${
                   timeframe === tf
                     ? 'bg-white text-black font-bold'
@@ -511,10 +760,12 @@ export const ForexChart: React.FC<ForexChartProps> = ({ selectedSymbol, onSelect
         <div className="bg-[#0a0a0a] border border-white/15 p-3.5 relative overflow-hidden">
           <div className="text-[10px] text-white/50 uppercase font-silkscreen flex items-center gap-1.5">
             <DollarSign className="w-3.5 h-3.5 text-amber-400" />
-            <span>DEMO BALANCE</span>
+            <span>CASH BALANCE</span>
           </div>
           <div className="font-silkscreen text-xl sm:text-2xl text-white mt-1">
-            ${demoBalance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            ${demoBalance === null
+              ? '—'
+              : demoBalance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
           </div>
           <div className="text-[9.5px] text-emerald-400 mt-1">100% VIRTUAL DEMO CASH</div>
         </div>
@@ -522,30 +773,34 @@ export const ForexChart: React.FC<ForexChartProps> = ({ selectedSymbol, onSelect
         <div className="bg-[#0a0a0a] border border-white/15 p-3.5">
           <div className="text-[10px] text-white/50 uppercase font-silkscreen">TOTAL EQUITY</div>
           <div className="font-silkscreen text-xl sm:text-2xl text-white mt-1">
-            ${equity.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            ${totalEquity.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
           </div>
-          <div className="text-[9.5px] text-white/40 mt-1">BALANCE + FLOATING PnL</div>
+          <div className="text-[9.5px] text-white/40 mt-1">CASH + ASSET VALUE</div>
         </div>
 
         <div className="bg-[#0a0a0a] border border-white/15 p-3.5">
-          <div className="text-[10px] text-white/50 uppercase font-silkscreen">UNREALIZED FLOATING PnL</div>
-          <div className={`font-silkscreen text-xl sm:text-2xl mt-1 ${totalFloatingPnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-            {totalFloatingPnl >= 0 ? '+' : ''}${totalFloatingPnl.toFixed(2)}
+          <div className="text-[10px] text-white/50 uppercase font-silkscreen">UNREALIZED PNL</div>
+          <div className={`font-silkscreen text-xl sm:text-2xl mt-1 ${unrealizedPnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+            {unrealizedPnl >= 0 ? '+' : ''}${unrealizedPnl.toFixed(2)}
           </div>
-          <div className="text-[9.5px] text-white/40 mt-1">{positions.length} ACTIVE POSITIONS</div>
+          <div className="text-[9.5px] text-white/40 mt-1">{openPositions.length} ACTIVE POSITIONS</div>
         </div>
 
         <div className="bg-[#0a0a0a] border border-white/15 p-3.5 flex flex-col justify-between">
           <div className="flex items-center justify-between">
             <span className="text-[10px] text-white/50 uppercase font-silkscreen">ACCOUNT MANAGEMENT</span>
-            <button
-              onClick={handleResetDemoAccount}
-              className="p-1 text-white/50 hover:text-amber-400 transition-colors cursor-pointer flex items-center gap-1 text-[10px] font-silkscreen"
-              title="Reset Demo Account to $100,000"
-            >
-              <RotateCcw className="w-3 h-3" />
-              <span>RESET $100K</span>
-            </button>
+            {viewAsUserId ? (
+              <span className="font-mono-geist text-[10px] text-rose-300">READ ONLY</span>
+            ) : (
+              <button
+                onClick={handleResetDemoAccount}
+                className="p-1 text-white/50 hover:text-amber-400 transition-colors cursor-pointer flex items-center gap-1 text-[10px] font-silkscreen"
+                title="Reset Demo Account to $100,000"
+              >
+                <RotateCcw className="w-3 h-3" />
+                <span>RESET $100K</span>
+              </button>
+            )}
           </div>
           <div className="flex items-center gap-2 mt-2">
             <button
@@ -557,12 +812,12 @@ export const ForexChart: React.FC<ForexChartProps> = ({ selectedSymbol, onSelect
               TERMINAL
             </button>
             <button
-              onClick={() => setActiveTab('positions')}
+              onClick={() => void openTradeHistory()}
               className={`flex-1 py-1 text-[10px] font-silkscreen border cursor-pointer relative ${
-                activeTab === 'positions' ? 'bg-white text-black border-white' : 'border-white/15 text-white/60'
+                isTradeHistoryOpen ? 'bg-white text-black border-white' : 'border-white/15 text-white/60'
               }`}
             >
-              TRADES ({positions.length})
+              TRADES ({tradeHistory.length})
             </button>
           </div>
         </div>
@@ -572,22 +827,24 @@ export const ForexChart: React.FC<ForexChartProps> = ({ selectedSymbol, onSelect
       <div className="flex items-center gap-2 overflow-x-auto pb-3 mb-6 scrollbar-none font-mono-geist text-xs">
         {MARKET_INSTRUMENTS.map((inst) => {
           const isSelected = currentInstrument.symbol === inst.symbol;
-          const liveInstrumentPrice = inst.symbol === 'BTC/USD'
-            ? marketState.btcPrice
-            : inst.symbol === 'GOLD' ? marketState.goldPrice : null;
+          const liveInstrumentPrice = inst.feedSymbol === selectedSymbol ? livePrice : null;
           return (
             <button
               key={inst.symbol}
               onClick={() => handleInstrumentSelect(inst)}
-              className={`flex items-center gap-2 px-3.5 py-2 border transition-all cursor-pointer whitespace-nowrap ${
+              disabled={!inst.feedSymbol}
+              title={inst.feedSymbol ? `Stream ${inst.feedSymbol}` : 'No live feed configured'}
+              className={`flex items-center gap-2 px-3.5 py-2 border transition-all whitespace-nowrap ${
                 isSelected
                   ? 'bg-white text-black border-white font-bold shadow-md'
-                  : 'bg-[#0a0a0a] border-white/15 text-white/70 hover:border-white/40 hover:text-white'
+                  : inst.feedSymbol
+                    ? 'bg-[#0a0a0a] border-white/15 text-white/70 hover:border-white/40 hover:text-white cursor-pointer'
+                    : 'bg-[#0a0a0a] border-white/10 text-white/30 cursor-not-allowed'
               }`}
             >
               <span className="text-sm">{inst.icon}</span>
               <span className="font-silkscreen text-[11px] tracking-wider">{inst.symbol}</span>
-              {(inst.symbol === 'BTC/USD' || inst.symbol === 'GOLD') && (
+              {inst.feedSymbol && (
                 <span className="font-mono-geist text-[10px]">
                   {liveInstrumentPrice === null
                     ? '--'
@@ -602,25 +859,12 @@ export const ForexChart: React.FC<ForexChartProps> = ({ selectedSymbol, onSelect
         })}
       </div>
 
-      {/* Trade Notification Alert Banner */}
-      {tradeNotification && (
-        <div className="mb-4 p-3 bg-amber-400 text-black font-mono-geist text-xs font-bold uppercase tracking-wider flex items-center justify-between border border-white animate-fade-in">
-          <div className="flex items-center gap-2">
-            <Zap className="w-4 h-4 text-black" />
-            <span>{tradeNotification}</span>
-          </div>
-          <button onClick={() => setTradeNotification(null)} className="text-black hover:opacity-70">
-            <XCircle className="w-4 h-4" />
-          </button>
-        </div>
-      )}
-
       {/* TAB 1: LIVE TERMINAL VIEW */}
       {activeTab === 'terminal' && (
-        <div className="grid grid-cols-1 xl:grid-cols-12 gap-6 items-stretch">
+        <div className="flex min-w-0 flex-col items-stretch gap-4 sm:gap-6 lg:flex-row">
           
           {/* Left 9-Cols: Interactive Live Chart Canvas & Telemetry HUD */}
-          <div className="xl:col-span-9 bg-[#080808] border border-white/15 p-4 sm:p-5 flex flex-col justify-between">
+          <div className="min-w-0 w-full flex-1 bg-[#080808] border border-white/15 p-3 sm:p-5 flex flex-col justify-between">
             
             {/* Top Chart Stats Ribbon */}
             <div className="flex flex-wrap items-center justify-between pb-4 border-b border-white/10 gap-4 font-mono-geist">
@@ -631,13 +875,13 @@ export const ForexChart: React.FC<ForexChartProps> = ({ selectedSymbol, onSelect
                 </div>
                 <div className="flex items-baseline gap-3 mt-1">
                   <span className="font-silkscreen text-2xl sm:text-3xl text-white font-bold tracking-tight">
-                    {currentPrice === null
+                    {livePrice === null
                       ? currentFeedStatus === 'connecting'
                         ? 'CONNECTING...'
                         : currentFeedStatus === 'error'
                           ? 'FEED RECONNECTING...'
                           : 'LIVE PRICE UNAVAILABLE'
-                      : `$${currentPrice.toLocaleString('en-US', { minimumFractionDigits: currentInstrument.decimals, maximumFractionDigits: currentInstrument.decimals })}`}
+                      : `$${livePrice.toLocaleString('en-US', { minimumFractionDigits: currentInstrument.decimals, maximumFractionDigits: currentInstrument.decimals })}`}
                   </span>
                   {priceChange !== null && priceChangePct !== null && (
                     <div className={`flex items-center gap-1 text-xs font-semibold px-2 py-0.5 ${
@@ -651,374 +895,19 @@ export const ForexChart: React.FC<ForexChartProps> = ({ selectedSymbol, onSelect
                 </div>
               </div>
 
-              {/* Quick Chart Display Controls */}
-              <div className="flex items-center gap-3 text-xs text-white/60">
-                <div className="hidden sm:flex items-center gap-2 border border-white/15 px-2 py-1 bg-black">
-                  <span className="text-[10px] text-white/40">MODE:</span>
-                  <button
-                    onClick={() => setChartType('candlestick')}
-                    className={`font-silkscreen text-[10px] px-1.5 py-0.5 cursor-pointer ${
-                      chartType === 'candlestick' ? 'text-white bg-white/20' : 'text-white/40 hover:text-white'
-                    }`}
-                  >
-                    CANDLES
-                  </button>
-                  <button
-                    onClick={() => setChartType('line')}
-                    className={`font-silkscreen text-[10px] px-1.5 py-0.5 cursor-pointer ${
-                      chartType === 'line' ? 'text-white bg-white/20' : 'text-white/40 hover:text-white'
-                    }`}
-                  >
-                    AREA
-                  </button>
-                </div>
-
-                <button
-                  onClick={() => setShowIndicators(!showIndicators)}
-                  className={`text-[10px] font-silkscreen px-2 py-1 border transition-colors cursor-pointer ${
-                    showIndicators ? 'border-white/40 text-white bg-white/10' : 'border-white/15 text-white/40 hover:text-white'
-                  }`}
-                >
-                  SMA(10): {showIndicators ? 'ON' : 'OFF'}
-                </button>
-
-              </div>
             </div>
 
-            {/* Active Binance Candle Telemetry */}
-            <div className="py-2.5 px-3 bg-black/80 border border-white/10 my-3 flex flex-wrap items-center justify-between text-[11px] font-mono-geist text-white/70 gap-2">
-              <div className="flex items-center gap-3 flex-wrap">
-                <span className="text-amber-400 font-silkscreen text-[10px]">DATE: {activeCandle?.dateStr ?? '--'}</span>
-                <span>TIME: <strong className="text-white">{activeCandle?.timeStr ?? '--'}</strong></span>
-                <span>O: <strong className="text-white">{activeCandle?.open.toFixed(currentInstrument.decimals) ?? '--'}</strong></span>
-                <span>H: <strong className="text-white">{activeCandle?.high.toFixed(currentInstrument.decimals) ?? '--'}</strong></span>
-                <span>L: <strong className="text-white">{activeCandle?.low.toFixed(currentInstrument.decimals) ?? '--'}</strong></span>
-                <span>C: <strong className="text-white">{activeCandle?.close.toFixed(currentInstrument.decimals) ?? '--'}</strong></span>
-              </div>
-              <div className="flex items-center gap-3 text-white/50 text-[10px]">
-                <span>VOL: <span className="text-white/80">{activeCandle?.volume.toFixed(5) ?? '--'} {isBtcInstrument ? 'BTC' : 'PAXG'}</span></span>
-                <span>SOURCE: <span className="text-white/80">BINANCE {currentInstrument.feedSymbol ?? 'N/A'} TRADES</span></span>
-              </div>
-            </div>
-
-            {/* SVG Chart Rendering Canvas with Crosshair Interactivity */}
-            <div className="relative w-full overflow-hidden bg-black border border-white/10 select-none">
-              <svg
-                viewBox={`0 0 ${svgWidth} ${svgHeight}`}
-                className="w-full h-[320px] sm:h-[380px] block"
-                onMouseLeave={() => setHoverIndex(null)}
-                onMouseMove={(e) => {
-                  const rect = e.currentTarget.getBoundingClientRect();
-                  const mouseX = ((e.clientX - rect.left) / rect.width) * svgWidth;
-                  const relativeX = mouseX - padding.left;
-                  if (candleCount > 0 && relativeX >= 0 && relativeX <= plotWidth) {
-                    const idx = Math.min(
-                      candles.length - 1,
-                      Math.max(0, Math.floor(relativeX / candleSlotWidth))
-                    );
-                    setHoverIndex(idx);
-                  }
-                }}
-              >
-                <defs>
-                  <linearGradient id="forexAreaGradient" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor="#d4a373" stopOpacity="0.3" />
-                    <stop offset="85%" stopColor="#d4a373" stopOpacity="0.0" />
-                  </linearGradient>
-                  <pattern id="gridPattern" width="60" height="40" patternUnits="userSpaceOnUse">
-                    <path d="M 60 0 L 0 0 0 40" fill="none" stroke="rgba(255,255,255,0.04)" strokeWidth="1" />
-                  </pattern>
-                </defs>
-
-                {/* Background grid */}
-                <rect
-                  x={padding.left}
-                  y={padding.top}
-                  width={plotWidth}
-                  height={plotHeight}
-                  fill="url(#gridPattern)"
-                />
-
-                {/* Horizontal Price Grid Lines & Labels */}
-                {[0, 0.25, 0.5, 0.75, 1].map((pct, i) => {
-                  const price = minPrice + priceRange * (1 - pct);
-                  const y = padding.top + plotHeight * pct;
-                  return (
-                    <g key={i}>
-                      <line
-                        x1={padding.left}
-                        y1={y}
-                        x2={padding.left + plotWidth}
-                        y2={y}
-                        stroke="rgba(255,255,255,0.08)"
-                        strokeDasharray="2 3"
-                      />
-                      <text
-                        x={padding.left + plotWidth + 6}
-                        y={y + 3.5}
-                        fill="rgba(255,255,255,0.4)"
-                        fontSize="9"
-                        fontFamily="Geist Mono, monospace"
-                      >
-                        {candleCount > 0 ? price.toFixed(currentInstrument.decimals) : '--'}
-                      </text>
-                    </g>
-                  );
-                })}
-
-                {/* Volume Bars at bottom */}
-                {candles.map((c, i) => {
-                  const x = padding.left + i * candleSlotWidth + (candleSlotWidth - candleBodyWidth) / 2;
-                  const maxVol = Math.max(maxCandleVolume, Number.EPSILON);
-                  const volHeight = (c.volume / maxVol) * 45;
-                  const y = padding.top + plotHeight - volHeight;
-                  const isBull = c.close >= c.open;
-                  return (
-                    <rect
-                      key={`vol-${i}`}
-                      x={x}
-                      y={y}
-                      width={candleBodyWidth}
-                      height={volHeight}
-                      fill={isBull ? 'rgba(16, 185, 129, 0.2)' : 'rgba(239, 68, 68, 0.2)'}
-                    />
-                  );
-                })}
-
-                {/* Candlestick / Line Rendering */}
-                {chartType === 'candlestick' ? (
-                  candles.map((c, i) => {
-                    const cx = padding.left + i * candleSlotWidth + candleSlotWidth / 2;
-                    const x = padding.left + i * candleSlotWidth + (candleSlotWidth - candleBodyWidth) / 2;
-                    const isBull = c.close >= c.open;
-
-                    const yOpen = getY(c.open);
-                    const yClose = getY(c.close);
-                    const yHigh = getY(c.high);
-                    const yLow = getY(c.low);
-
-                    const bodyY = Math.min(yOpen, yClose);
-                    const bodyHeight = Math.max(1.5, Math.abs(yClose - yOpen));
-
-                    const color = isBull ? '#10b981' : '#ef4444';
-
-                    return (
-                      <g key={i} className="transition-opacity">
-                        {/* High-Low Wick */}
-                        <line
-                          x1={cx}
-                          y1={yHigh}
-                          x2={cx}
-                          y2={yLow}
-                          stroke={color}
-                          strokeWidth="1.2"
-                        />
-                        {/* Open-Close Body */}
-                        <rect
-                          x={x}
-                          y={bodyY}
-                          width={candleBodyWidth}
-                          height={bodyHeight}
-                          fill={color}
-                          stroke={color}
-                          strokeWidth="0.8"
-                        />
-                      </g>
-                    );
-                  })
-                ) : candleCount > 0 ? (
-                  /* Area Chart Mode */
-                  <>
-                    <path
-                      d={`
-                        M ${padding.left + candleSlotWidth / 2} ${getY(candles[0].close)}
-                        ${candles.map((c, i) => `L ${padding.left + i * candleSlotWidth + candleSlotWidth / 2} ${getY(c.close)}`).join(' ')}
-                        L ${padding.left + (candles.length - 1) * candleSlotWidth + candleSlotWidth / 2} ${padding.top + plotHeight}
-                        L ${padding.left + candleSlotWidth / 2} ${padding.top + plotHeight}
-                        Z
-                      `}
-                      fill="url(#forexAreaGradient)"
-                    />
-                    <path
-                      d={`
-                        M ${padding.left + candleSlotWidth / 2} ${getY(candles[0].close)}
-                        ${candles.map((c, i) => `L ${padding.left + i * candleSlotWidth + candleSlotWidth / 2} ${getY(c.close)}`).join(' ')}
-                      `}
-                      fill="none"
-                      stroke="#ffffff"
-                      strokeWidth="1.8"
-                    />
-                  </>
-                ) : null}
-
-                {candleCount === 0 && (
-                  <text
-                    x={padding.left + plotWidth / 2}
-                    y={padding.top + plotHeight / 2}
-                    fill="rgba(255,255,255,0.5)"
-                    fontSize="12"
-                    textAnchor="middle"
-                    fontFamily="Geist Mono, monospace"
-                  >
-                    {currentInstrument.feedSymbol
-                      ? currentFeedStatus === 'connected'
-                        ? `WAITING FOR LIVE ${currentInstrument.feedSymbol} TRADES`
-                        : `CONNECTING TO BINANCE ${currentInstrument.feedSymbol}`
-                      : 'LIVE DATA IS NOT AVAILABLE FOR THIS INSTRUMENT'}
-                  </text>
-                )}
-
-                {/* Active Open Positions Overlay Lines on Chart */}
-                {positions.filter((p) => p.symbol === currentInstrument.symbol).map((pos) => {
-                  const posY = getY(pos.entryPrice);
-                  const isBuy = pos.type === 'BUY';
-                  return (
-                    <g key={pos.id}>
-                      <line
-                        x1={padding.left}
-                        y1={posY}
-                        x2={padding.left + plotWidth}
-                        y2={posY}
-                        stroke={isBuy ? '#3b82f6' : '#f97316'}
-                        strokeWidth="1.5"
-                        strokeDasharray="4 2"
-                      />
-                      <rect
-                        x={padding.left + 5}
-                        y={posY - 10}
-                        width={110}
-                        height={18}
-                        fill={isBuy ? '#1e3a8a' : '#7c2d12'}
-                        rx="2"
-                      />
-                      <text
-                        x={padding.left + 10}
-                        y={posY + 3}
-                        fill="#ffffff"
-                        fontSize="9"
-                        fontFamily="Geist Mono, monospace"
-                        fontWeight="bold"
-                      >
-                        {pos.type} {pos.lots}L @ {pos.entryPrice.toFixed(currentInstrument.decimals)}
-                      </text>
-                    </g>
-                  );
-                })}
-
-                {/* Indicator: SMA line */}
-                {showIndicators && smaPath && (
-                  <path
-                    d={smaPath}
-                    fill="none"
-                    stroke="#f59e0b"
-                    strokeWidth="1.4"
-                    strokeDasharray="4 2"
-                  />
-                )}
-
-                {/* Current Price Horizontal Ray */}
-                {currentPrice !== null && candleCount > 0 && (() => {
-                  const curY = getY(currentPrice);
-                  return (
-                    <g>
-                      <line
-                        x1={padding.left}
-                        y1={curY}
-                        x2={padding.left + plotWidth}
-                        y2={curY}
-                        stroke={isPositive ? '#10b981' : '#ef4444'}
-                        strokeWidth="1.2"
-                        strokeDasharray="3 3"
-                      />
-                      <rect
-                        x={padding.left + plotWidth + 2}
-                        y={curY - 9}
-                        width={76}
-                        height={18}
-                        fill={isPositive ? '#10b981' : '#ef4444'}
-                      />
-                      <text
-                        x={padding.left + plotWidth + 6}
-                        y={curY + 3.5}
-                        fill="#000000"
-                        fontSize="9"
-                        fontFamily="Geist Mono, monospace"
-                        fontWeight="bold"
-                      >
-                        {currentPrice.toFixed(currentInstrument.decimals)}
-                      </text>
-                    </g>
-                  );
-                })()}
-
-                {/* Crosshair Cursor */}
-                {hoverIndex !== null && (
-                  (() => {
-                    const targetCandle = candles[hoverIndex];
-                    const hx = padding.left + hoverIndex * candleSlotWidth + candleSlotWidth / 2;
-                    const hy = getY(targetCandle.close);
-                    return (
-                      <g pointerEvents="none">
-                        <line
-                          x1={hx}
-                          y1={padding.top}
-                          x2={hx}
-                          y2={padding.top + plotHeight}
-                          stroke="rgba(255,255,255,0.4)"
-                          strokeDasharray="2 2"
-                        />
-                        <line
-                          x1={padding.left}
-                          y1={hy}
-                          x2={padding.left + plotWidth}
-                          y2={hy}
-                          stroke="rgba(255,255,255,0.4)"
-                          strokeDasharray="2 2"
-                        />
-                        <circle cx={hx} cy={hy} r="3.5" fill="#ffffff" stroke="#000000" strokeWidth="1.5" />
-                        <rect x={hx - 36} y={padding.top + plotHeight + 3} width={72} height={16} fill="#ffffff" />
-                        <text
-                          x={hx}
-                          y={padding.top + plotHeight + 14}
-                          fill="#000000"
-                          fontSize="8.5"
-                          textAnchor="middle"
-                          fontFamily="Geist Mono, monospace"
-                          fontWeight="bold"
-                        >
-                          {targetCandle.dateStr} {targetCandle.timeStr}
-                        </text>
-                      </g>
-                    );
-                  })()
-                )}
-
-                {/* X-Axis periodic timestamps */}
-                {candles.filter((_, idx) => idx % 6 === 0).map((c, i) => {
-                  const origIndex = candles.indexOf(c);
-                  const x = padding.left + origIndex * candleSlotWidth + candleSlotWidth / 2;
-                  return (
-                    <text
-                      key={i}
-                      x={x}
-                      y={padding.top + plotHeight + 18}
-                      fill="rgba(255,255,255,0.35)"
-                      fontSize="9"
-                      textAnchor="middle"
-                      fontFamily="Geist Mono, monospace"
-                    >
-                      {c.timeStr}
-                    </text>
-                  );
-                })}
-              </svg>
-            </div>
+            <Suspense fallback={<div className="h-[320px] w-full border border-white/10 bg-[#0a0a0a] sm:h-[380px]" />}>
+              <TradingPriceChart
+                key={`${selectedSymbol}-${timeframe}`}
+              />
+            </Suspense>
 
             {/* Bottom telemetry footer */}
             <div className="flex flex-wrap items-center justify-between pt-3 font-mono-geist text-[10px] text-white/40 border-t border-white/10 mt-3">
               <span className="flex items-center gap-2">
                 <span className={`w-1.5 h-1.5 rounded-full ${currentFeedStatus === 'connected' ? 'bg-emerald-400' : 'bg-amber-400'}`} />
-                <span>BINANCE {currentInstrument.feedSymbol ?? 'NO LIVE FEED'} TRADE STREAM // DEMO ORDERS</span>
+                <span>{selectedSymbol === 'XAUUSD' ? 'GOLD API' : 'BINANCE'} {currentInstrument.feedSymbol ?? 'NO LIVE FEED'} PRICE // DEMO ORDERS</span>
               </span>
               <div className="flex items-center gap-4">
                 <span>CONTRACT SIZE: <strong>{currentInstrument.contractSize} UNITS/LOT</strong></span>
@@ -1028,12 +917,12 @@ export const ForexChart: React.FC<ForexChartProps> = ({ selectedSymbol, onSelect
           </div>
 
           {/* Right 3-Cols: Live Quotes & Order Execution Panel */}
-          <div className="xl:col-span-3 flex flex-col justify-between bg-[#0a0a0a] border border-white/15 p-5 space-y-5 font-mono-geist">
+          <div className="min-w-0 w-full shrink-0 flex flex-col justify-between bg-[#0a0a0a] border border-white/15 p-4 sm:p-5 space-y-5 font-mono-geist lg:w-80">
             
             {/* Top Panel: Bid / Ask Spread Display */}
             <div className="space-y-3">
               <div className="flex items-center justify-between border-b border-white/10 pb-2">
-                <span className="font-silkscreen text-xs text-white">ORDER EXECUTION</span>
+                <span className="font-silkscreen text-xs text-white">ORDER EXECUTION // {selectedSymbol}</span>
                 <span className="text-[10px] text-amber-400 border border-amber-500/30 px-1.5 py-0.5 bg-amber-500/10 font-bold">
                   DEMO MONEY
                 </span>
@@ -1067,6 +956,7 @@ export const ForexChart: React.FC<ForexChartProps> = ({ selectedSymbol, onSelect
                   <button
                     key={lots}
                     onClick={() => setOrderLots(lots)}
+                    disabled={Boolean(viewAsUserId)}
                     className={`py-1 text-[10px] font-silkscreen border cursor-pointer ${
                       orderLots === lots
                         ? 'border-white bg-white text-black font-bold'
@@ -1087,6 +977,7 @@ export const ForexChart: React.FC<ForexChartProps> = ({ selectedSymbol, onSelect
                   type="number"
                   placeholder="e.g. 2780.00"
                   value={orderTP}
+                  disabled={Boolean(viewAsUserId)}
                   onChange={(e) => setOrderTP(e.target.value)}
                   className="w-full bg-black border border-white/15 p-1.5 text-xs text-emerald-400 font-mono-geist focus:outline-none focus:border-emerald-500"
                 />
@@ -1097,6 +988,7 @@ export const ForexChart: React.FC<ForexChartProps> = ({ selectedSymbol, onSelect
                   type="number"
                   placeholder="e.g. 2720.00"
                   value={orderSL}
+                  disabled={Boolean(viewAsUserId)}
                   onChange={(e) => setOrderSL(e.target.value)}
                   className="w-full bg-black border border-white/15 p-1.5 text-xs text-rose-400 font-mono-geist focus:outline-none focus:border-rose-500"
                 />
@@ -1108,19 +1000,19 @@ export const ForexChart: React.FC<ForexChartProps> = ({ selectedSymbol, onSelect
               <div className="grid grid-cols-2 gap-2">
                 <button
                   onClick={() => handleExecuteOrder('SELL')}
-                  disabled={currentPrice === null}
+                  disabled={Boolean(viewAsUserId) || livePrice === null || executingSide !== null}
                   className="py-3 px-2 bg-rose-600 hover:bg-rose-500 disabled:bg-neutral-800 disabled:text-white/30 disabled:cursor-not-allowed text-white font-silkscreen text-xs font-bold tracking-wider transition-colors cursor-pointer flex items-center justify-center gap-1.5 shadow-sm"
                 >
-                  <ArrowDownRight className="w-4 h-4" />
-                  <span>SELL MARKET</span>
+                  {executingSide === 'SELL' ? <Loader2 className="w-4 h-4 animate-spin" /> : <ArrowDownRight className="w-4 h-4" />}
+                  <span>SELL {selectedSymbol}</span>
                 </button>
                 <button
                   onClick={() => handleExecuteOrder('BUY')}
-                  disabled={currentPrice === null}
+                  disabled={Boolean(viewAsUserId) || livePrice === null || executingSide !== null}
                   className="py-3 px-2 bg-emerald-600 hover:bg-emerald-500 disabled:bg-neutral-800 disabled:text-white/30 disabled:cursor-not-allowed text-white font-silkscreen text-xs font-bold tracking-wider transition-colors cursor-pointer flex items-center justify-center gap-1.5 shadow-sm"
                 >
-                  <ArrowUpRight className="w-4 h-4" />
-                  <span>BUY MARKET</span>
+                  {executingSide === 'BUY' ? <Loader2 className="w-4 h-4 animate-spin" /> : <ArrowUpRight className="w-4 h-4" />}
+                  <span>BUY {selectedSymbol}</span>
                 </button>
               </div>
             </div>
@@ -1129,11 +1021,11 @@ export const ForexChart: React.FC<ForexChartProps> = ({ selectedSymbol, onSelect
             <div className="border-t border-white/10 pt-3 space-y-1.5 text-xs">
               <div className="flex justify-between text-[11px]">
                 <span className="text-white/50">SESSION HIGH:</span>
-                <span className="text-white font-medium">{candles.length ? maxPrice.toFixed(currentInstrument.decimals) : '--'}</span>
+                <span className="text-white font-medium">{sessionCandleHigh?.toFixed(currentInstrument.decimals) ?? '--'}</span>
               </div>
               <div className="flex justify-between text-[11px]">
                 <span className="text-white/50">SESSION LOW:</span>
-                <span className="text-white font-medium">{candles.length ? minPrice.toFixed(currentInstrument.decimals) : '--'}</span>
+                <span className="text-white font-medium">{sessionCandleLow?.toFixed(currentInstrument.decimals) ?? '--'}</span>
               </div>
             </div>
 
@@ -1160,7 +1052,7 @@ export const ForexChart: React.FC<ForexChartProps> = ({ selectedSymbol, onSelect
 
           {positions.length === 0 ? (
             <div className="text-center py-10 border border-white/5 bg-black/40 text-white/40 text-xs">
-              NO OPEN POSITIONS. GO TO TERMINAL TAB AND PLACE A BUY OR SELL ORDER ON GOLD OR BITCOIN.
+              NO OPEN POSITIONS. GO TO THE TERMINAL TAB AND PLACE A BUY OR SELL ORDER ON A CRYPTO PAIR.
             </div>
           ) : (
             <div className="overflow-x-auto">
@@ -1205,9 +1097,10 @@ export const ForexChart: React.FC<ForexChartProps> = ({ selectedSymbol, onSelect
                         <td className="py-3 px-3 text-right">
                           <button
                             onClick={() => handleClosePosition(pos)}
-                            className="px-3 py-1 bg-white text-black font-silkscreen text-[10px] font-bold hover:bg-neutral-200 cursor-pointer"
+                            disabled={Boolean(viewAsUserId)}
+                            className="px-3 py-1 bg-white text-black font-silkscreen text-[10px] font-bold hover:bg-neutral-200 cursor-pointer disabled:cursor-not-allowed disabled:opacity-40"
                           >
-                            CLOSE
+                            {viewAsUserId ? 'READ ONLY' : 'CLOSE'}
                           </button>
                         </td>
                       </tr>
@@ -1217,6 +1110,68 @@ export const ForexChart: React.FC<ForexChartProps> = ({ selectedSymbol, onSelect
               </table>
             </div>
           )}
+        </div>
+      )}
+
+      {isTradeHistoryOpen && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm">
+          <section
+            aria-labelledby="trade-history-title"
+            aria-modal="true"
+            className="w-full max-w-5xl border border-white/15 bg-[#090909] shadow-2xl"
+            role="dialog"
+          >
+            <header className="flex items-center justify-between border-b border-white/10 px-5 py-4">
+              <div>
+                <p className="font-mono-geist text-[10px] tracking-[0.2em] text-emerald-400">ACCOUNT // LEDGER</p>
+                <h2 className="mt-1 font-silkscreen text-sm text-white" id="trade-history-title">TRADE HISTORY</h2>
+              </div>
+              <button
+                aria-label="Close trade history"
+                className="border border-white/15 px-3 py-1.5 font-mono-geist text-xs text-white/70 hover:border-white/40 hover:text-white"
+                onClick={() => setIsTradeHistoryOpen(false)}
+                type="button"
+              >
+                CLOSE
+              </button>
+            </header>
+            <div className="max-h-[70vh] overflow-auto p-4 sm:p-5">
+              {isTradeHistoryLoading ? (
+                <p className="py-10 text-center font-mono-geist text-xs text-white/50">LOADING TRADE HISTORY…</p>
+              ) : tradeHistoryError ? (
+                <p className="border border-rose-500/20 bg-rose-500/5 p-4 font-mono-geist text-xs text-rose-300" role="alert">
+                  {tradeHistoryError}
+                </p>
+              ) : tradeHistory.length === 0 ? (
+                <p className="py-10 text-center font-mono-geist text-xs text-white/50">NO TRADES RECORDED.</p>
+              ) : (
+                <table className="w-full min-w-[680px] border-collapse text-left font-mono-geist text-xs text-white">
+                  <thead>
+                    <tr className="border-b border-white/15 font-silkscreen text-[10px] text-white/45">
+                      <th className="px-3 py-3">DATE</th>
+                      <th className="px-3 py-3">SYMBOL</th>
+                      <th className="px-3 py-3">SIDE</th>
+                      <th className="px-3 py-3 text-right">AMOUNT</th>
+                      <th className="px-3 py-3 text-right">PRICE</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-white/10">
+                    {tradeHistory.map((trade) => (
+                      <tr className="hover:bg-white/[0.03]" key={trade.id}>
+                        <td className="px-3 py-3 text-white/60">{new Date(trade.createdAt).toLocaleString()}</td>
+                        <td className="px-3 py-3 font-semibold">{trade.symbol}</td>
+                        <td className={`px-3 py-3 font-bold ${trade.side === 'buy' ? 'text-emerald-400' : 'text-rose-400'}`}>
+                          {trade.side.toUpperCase()}
+                        </td>
+                        <td className="px-3 py-3 text-right">{trade.amount.toLocaleString()}</td>
+                        <td className="px-3 py-3 text-right">${trade.price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 8 })}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          </section>
         </div>
       )}
 

@@ -11,7 +11,6 @@ export interface Project {
     label: string;
     value: string;
   }[];
-  demoUrl: string;
   githubUrl: string;
   featured?: boolean;
   highlights: string[];

@@ -46,7 +46,7 @@ export const Hero: React.FC<HeroProps> = ({ onContactClick, onLaunchTrading }) =
             </h1>
 
             <h2 className="font-mono-geist text-base sm:text-lg text-white/90 font-medium tracking-wide mb-4">
-              QUANTITATIVE SYSTEMS, LIVE FOREX ENGINES &amp; SECTOR HEATMAPS
+              QUANTITATIVE SYSTEMS, LIVE CRYPTO MARKETS &amp; ANALYTICS
             </h2>
 
             <p className="font-inter text-sm sm:text-base text-white/70 max-w-xl leading-relaxed mb-8 font-light">
@@ -56,10 +56,10 @@ export const Hero: React.FC<HeroProps> = ({ onContactClick, onLaunchTrading }) =
             {/* Simple Direct Actions */}
             <div className="flex flex-col sm:flex-row sm:flex-wrap gap-3 max-w-xl">
               <button
-                onClick={() => scrollTo('forex')}
+                onClick={onLaunchTrading}
                 className="py-3.5 px-6 font-silkscreen text-xs uppercase tracking-wider bg-white text-black font-bold hover:bg-neutral-200 transition-all cursor-pointer text-center flex items-center justify-center gap-2"
               >
-                <span>OPEN FOREX CHART</span>
+                <span>OPEN CRYPTO CHART</span>
                 <ArrowRight className="w-3.5 h-3.5 text-black" />
               </button>
 

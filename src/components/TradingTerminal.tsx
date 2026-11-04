@@ -22,6 +22,23 @@ const formatPnl = (pnl: number) =>
     maximumFractionDigits: 2,
   })}`;
 
+// Contract size (units per lot) for each market symbol. Used to scale the notional
+// value of an order when it is submitted to the backend trade function.
+const CONTRACT_SIZES: Record<string, number> = {
+  BTCUSDT: 1,
+  ETHUSDT: 10,
+  SOLUSDT: 1,
+  XRPUSDT: 1,
+  PAXGUSDT: 1,
+  XAUUSD: 1,
+};
+
+const getContractSize = (symbol: string): number => {
+  const normalized = symbol.toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const size = CONTRACT_SIZES[normalized] ?? 1;
+  return Number.isFinite(size) && size > 0 ? size : 1;
+};
+
 export function TradingTerminal() {
   const [activeTab, setActiveTab] = useState<TerminalTab>('positions');
   const [isLoading, setIsLoading] = useState(true);
@@ -105,8 +122,11 @@ export function TradingTerminal() {
           action: 'open',
           symbol: p.symbol,
           side: closingSide,
-          amount: p.size,
+          // Send the notional amount scaled by the instrument contract size so the
+          // backend can compute realized PnL consistently (amount * price * contractSize).
+          amount: p.size * getContractSize(p.symbol),
           price: livePrice,
+          contractSize: getContractSize(p.symbol),
         }),
       });
       const result: unknown = await response.json();
@@ -204,10 +224,11 @@ export function TradingTerminal() {
                       ? useMarketStore.getState().livePrice
                       : null);
                   const hasPrice = Number.isFinite(livePrice);
+                  // PnL must include the contract size of the instrument:
+                  // (livePrice - avgPrice) * netAmount * contractSize
+                  const contractSize = getContractSize(position.symbol);
                   const pnl = hasPrice && livePrice !== null
-                    ? position.side === 'LONG'
-                      ? (livePrice - position.avgPrice) * position.size
-                      : (position.avgPrice - livePrice) * position.size
+                    ? (livePrice - position.avgPrice) * position.netAmount * contractSize
                     : null;
                   const isClosing = closingSymbol === position.symbol;
 

@@ -4,7 +4,7 @@ import { TradeAccess, type TradeAccessProps } from '../TradeAccess';
 import { TradingTerminal } from '../TradingTerminal';
 import { useMarketStore } from '../../store/useMarketStore';
 import { useTradingStore } from '../../store/useTradingStore';
-import { buildPositions } from '../../store/positions';
+import { buildPositions, getContractSize } from '../../store/positions';
 
 interface TradingDashboardProps {
   onBackToHome: () => void;
@@ -23,19 +23,23 @@ export const TradingDashboard: React.FC<TradingDashboardProps> = ({ onBackToHome
   const prices = useTradingStore((store) => store.prices);
 
   const openPositions = React.useMemo(() => buildPositions(trades), [trades]);
-  const totalAssetValue = React.useMemo(() => {
-    return openPositions.reduce((total, pos) => {
-      const price = prices[pos.symbol] ?? pos.avgPrice;
-      return total + pos.netAmount * price;
-    }, 0);
-  }, [openPositions, prices]);
-  const totalEquity = (demoBalance ?? 0) + totalAssetValue;
+  // All position math must include the instrument contract size:
+  // PnL = (livePrice - avgPrice) * netAmount * contractSize
   const unrealizedPnl = React.useMemo(() => {
     return openPositions.reduce((total, pos) => {
       const price = prices[pos.symbol] ?? pos.avgPrice;
-      return total + (price - pos.avgPrice) * pos.netAmount;
+      const contractSize = getContractSize(pos.symbol);
+      return total + (price - pos.avgPrice) * pos.netAmount * contractSize;
     }, 0);
   }, [openPositions, prices]);
+  const totalCostBasis = openPositions.reduce((total, pos) => {
+    const contractSize = getContractSize(pos.symbol);
+    return total + pos.netAmount * pos.avgPrice * contractSize;
+  }, 0);
+  // Total Equity = cash balance + open position value (cost basis + unrealized PnL),
+  // both scaled by the contract size. Equivalent to useTradingStore.getTotalEquity().
+  const totalAssetValue = totalCostBasis + unrealizedPnl;
+  const totalEquity = (demoBalance ?? 0) + totalAssetValue;
 
   const exitGodMode = () => {
     setViewAsUser(null);

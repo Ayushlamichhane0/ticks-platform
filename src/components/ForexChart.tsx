@@ -20,7 +20,7 @@ import {
 } from 'lucide-react';
 import { getViewAsHeaders, useMarketStore } from '../store/useMarketStore';
 import { useTradingStore } from '../store/useTradingStore';
-import { buildPositions } from '../store/positions';
+import { buildPositions, getContractSize } from '../store/positions';
 import { MARKET_INSTRUMENTS } from '../constants/market';
 import type { MarketInstrument } from '../constants/market';
 
@@ -272,14 +272,15 @@ export const ForexChart: React.FC<{ getAccessToken: () => Promise<string> }> = (
   const unrealizedPnl = useMemo(() => {
     return openPositions.reduce((total, pos) => {
       const price = storePrices[pos.symbol] ?? pos.avgPrice;
-      const posPnl =
-        pos.side === 'LONG'
-          ? (price - pos.avgPrice) * pos.size
-          : (pos.avgPrice - price) * pos.size;
+      // PnL must include the contract size of the instrument:
+      // (livePrice - avgPrice) * netAmount * contractSize
+      const contractSize = getContractSize(pos.symbol);
+      const posPnl = (price - pos.avgPrice) * pos.netAmount * contractSize;
       return total + posPnl;
     }, 0);
   }, [openPositions, storePrices]);
 
+  // Total Equity includes the contract-size-scaled unrealized PnL.
   const totalEquity = (demoBalance ?? 0) + unrealizedPnl;
 
   const [positions, setPositions] = useState<OpenPosition[]>([]);

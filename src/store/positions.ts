@@ -1,6 +1,27 @@
 export type TradeSide = 'buy' | 'sell';
 export type PositionSide = 'LONG' | 'SHORT';
 
+/**
+ * Contract size (units per lot) for each supported market symbol.
+ * PnL must always be scaled by the contract size of the traded instrument:
+ *   PnL = (livePrice - avgPrice) * netAmount * contractSize
+ */
+export const CONTRACT_SIZES: Record<string, number> = {
+  BTCUSDT: 1,
+  ETHUSDT: 10,
+  SOLUSDT: 1,
+  XRPUSDT: 1,
+  PAXGUSDT: 1,
+  XAUUSD: 1,
+};
+
+/** Returns the contract size for a symbol, defaulting to 1 for unknown symbols. */
+export function getContractSize(symbol: string): number {
+  const normalized = symbol.toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const size = CONTRACT_SIZES[normalized] ?? 1;
+  return Number.isFinite(size) && size > 0 ? size : 1;
+}
+
 export interface Trade {
   id: string;
   symbol: string;

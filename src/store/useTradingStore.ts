@@ -1,7 +1,7 @@
 import { create } from 'zustand';
-import { buildPositions, type Position, type PositionSide, type Trade } from './positions';
+import { buildPositions, getContractSize, type Position, type PositionSide, type Trade } from './positions';
 
-export { buildPositions, type Position, type PositionSide, type Trade };
+export { buildPositions, CONTRACT_SIZES, getContractSize, type Position, type PositionSide, type Trade };
 
 interface TradingStore {
   trades: Trade[];
@@ -37,9 +37,10 @@ export const useTradingStore = create<TradingStore>((set, get) => ({
     const positions = buildPositions(trades);
     const totalPnl = positions.reduce((total, pos) => {
       const livePrice = prices[pos.symbol] ?? pos.avgPrice;
-      const pnl = pos.side === 'LONG'
-        ? (livePrice - pos.avgPrice) * pos.size
-        : (pos.avgPrice - livePrice) * pos.size;
+      // PnL must include the contract size of the instrument:
+      // (livePrice - avgPrice) * netAmount * contractSize
+      const contractSize = getContractSize(pos.symbol);
+      const pnl = (livePrice - pos.avgPrice) * pos.netAmount * contractSize;
       return total + pnl;
     }, 0);
     return cashBalance + totalPnl;

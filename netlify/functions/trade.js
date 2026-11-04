@@ -207,21 +207,111 @@ export async function handler(event) {
       });
     }
 
-    // Insert trade into trades table without blocking sells or deducting full cost
-    const [newTrade] = await sql`
-      INSERT INTO trades (user_id, symbol, amount, price, side, contract_size)
-      VALUES (${profile.id}, ${symbol}, ${amount}, ${price}, ${side}, 1)
-      RETURNING id
+    // Contract size (units per lot) for the traded instrument. The client may send it
+    // explicitly; otherwise fall back to the shared CONTRACT_SIZES table (default 1).
+    const CONTRACT_SIZES = {
+      BTCUSDT: 1,
+      ETHUSDT: 10,
+      SOLUSDT: 1,
+      XRPUSDT: 1,
+      PAXGUSDT: 1,
+      XAUUSD: 1,
+    };
+    const normalizedSymbol = symbol.toUpperCase().replace(/[^A-Z0-9]/g, '');
+    const requestedContractSize = Number.parseFloat(String(body.contractSize));
+    const contractSize = Number.isFinite(requestedContractSize) && requestedContractSize > 0
+      ? requestedContractSize
+      : CONTRACT_SIZES[normalizedSymbol] ?? 1;
+
+    // Load the current net position (before this trade) so a sell that closes a Long
+    // can be credited with the realized PnL in the same SQL transaction.
+    const priorTrades = await sql`
+      SELECT side, amount, price
+      FROM trades
+      WHERE user_id = ${profile.id} AND symbol = ${symbol}
     `;
 
-    const currentBalance = Number(profile.demo_balance ?? 100000);
+    let netAmount = 0;
+    let avgPrice = 0;
+    for (const row of priorTrades) {
+      const tSide = String(row.side || '').toLowerCase();
+      const tAmount = Number.parseFloat(String(row.amount));
+      const tPrice = Number.parseFloat(String(row.price));
+      if (!Number.isFinite(tAmount) || tAmount <= 0 || !Number.isFinite(tPrice) || tPrice <= 0) {
+        continue;
+      }
+      const signedAmount = tSide === 'sell' ? -tAmount : tAmount;
+      if (netAmount >= 0 && signedAmount > 0) {
+        const newNet = netAmount + signedAmount;
+        avgPrice = newNet > 0 ? (avgPrice * netAmount + tPrice * signedAmount) / newNet : tPrice;
+        netAmount = newNet;
+      } else if (netAmount <= 0 && signedAmount < 0) {
+        const newShort = netAmount + signedAmount;
+        avgPrice = newShort !== 0
+          ? (avgPrice * Math.abs(netAmount) + tPrice * Math.abs(signedAmount)) / Math.abs(newShort)
+          : tPrice;
+        netAmount = newShort;
+      } else {
+        netAmount += signedAmount;
+        if (Math.abs(netAmount) < 1e-8) {
+          netAmount = 0;
+          avgPrice = 0;
+        } else if ((netAmount > 0 && signedAmount > 0) || (netAmount < 0 && signedAmount < 0)) {
+          // Position flipped: entry price resets to the flip trade price.
+          avgPrice = tPrice;
+        }
+        // Partial reduction keeps the original average entry price.
+      }
+    }
+
+    // Realized PnL when this sell closes (fully or partially) an existing Long:
+    //   totalValue = amount * price * contractSize (notional proceeds credited to balance)
+    const closingLongUnits = netAmount > 0 ? Math.min(amount / contractSize, netAmount) : 0;
+    const realizedPnl = side === 'sell' && closingLongUnits > 0
+      ? (price - avgPrice) * closingLongUnits * contractSize
+      : 0;
+    const totalValue = closingLongUnits * price * contractSize;
+
+    // SQL transaction: insert the trade and update demo_balance atomically.
+    const txResults = await sql.transaction(async (tx) => {
+      const [inserted] = await tx`
+        INSERT INTO trades (user_id, symbol, amount, price, side, contract_size)
+        VALUES (${profile.id}, ${symbol}, ${amount}, ${price}, ${side}, ${contractSize})
+        RETURNING id
+      `;
+
+      if (realizedPnl !== 0) {
+        // Sell closing a Long: credit the notional proceeds (totalValue =
+        // amount * price * contractSize), which includes the realized PnL,
+        // to the user's demo_balance.
+        console.log(
+          `Closing Long for ${symbol}: realizedPnl=${realizedPnl.toFixed(2)}, totalValue=${totalValue.toFixed(2)}`
+        );
+        const [updatedProfile] = await tx`
+          UPDATE profiles
+          SET demo_balance = COALESCE(demo_balance, 100000.00) + ${totalValue}
+          WHERE id = ${profile.id}
+          RETURNING demo_balance
+        `;
+        return { tradeId: inserted.id, demoBalance: updatedProfile?.demo_balance };
+      }
+
+      const [currentProfile] = await tx`
+        SELECT demo_balance FROM profiles WHERE id = ${profile.id}
+      `;
+      return { tradeId: inserted.id, demoBalance: currentProfile?.demo_balance };
+    });
+
+    const newTrade = txResults;
+    const currentBalance = Number(newTrade.demoBalance ?? profile.demo_balance ?? 100000);
 
     return jsonResponse(200, {
       success: true,
       message: 'Trade executed',
-      tradeId: String(newTrade.id),
+      tradeId: String(newTrade.tradeId),
       newBalance: currentBalance,
       demoBalance: currentBalance,
+      ...(realizedPnl !== 0 ? { realizedPnl: Number(realizedPnl.toFixed(2)) } : {}),
     });
   } catch (error) {
     console.error('Failed to process trade in Neon Postgres.', error);

@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   TrendingUp,
   TrendingDown,
@@ -14,6 +14,11 @@ import {
   Sparkles
 } from 'lucide-react';
 import { toMarketSymbol, useMarketStore } from '../store/useMarketStore';
+import { useTradingStore } from '../store/useTradingStore';
+
+// Fallback placeholder price used when the live API is unavailable (e.g. rate-limited
+// with a 502 error) so the heatmap grid never collapses or crashes on missing data.
+const FALLBACK_HEATMAP_PRICE = 100;
 
 export interface MarketTicker {
   symbol: string;
@@ -72,6 +77,23 @@ export const MarketHeatmap: React.FC<MarketHeatmapProps> = ({ onSelectAssetForTe
   const sessionOpenPrice = useMarketStore((store) => store.sessionOpenPrice);
   const connectionStatus = useMarketStore((store) => store.status);
   const setSelectedSymbol = useMarketStore((store) => store.setSelectedSymbol);
+  // Live REST prices streamed into the trading store (may be empty when the API is
+  // rate limited / returning 502, which is why a fallback price is required below).
+  const prices = useTradingStore((store) => store.prices);
+
+  /**
+   * Resolves a displayable price for a heatmap tile. If `prices[symbol]` is
+   * undefined or 0 (e.g. the live API hit a rate limit and returned a 502), fall
+   * back to a placeholder price so the grid never collapses or crashes.
+   */
+  const getHeatmapPrice = (symbol: string): number => {
+    const price = prices[symbol];
+    if (price === undefined || price === null || !Number.isFinite(price) || price <= 0) {
+      return FALLBACK_HEATMAP_PRICE;
+    }
+    return price;
+  };
+
   const sessionChange = livePrice !== null && sessionOpenPrice !== null
     ? +(((livePrice - sessionOpenPrice) / sessionOpenPrice) * 100).toFixed(2)
     : null;
@@ -92,6 +114,31 @@ export const MarketHeatmap: React.FC<MarketHeatmapProps> = ({ onSelectAssetForTe
     })),
     [livePrice, selectedSymbol, sessionChange]
   );
+
+  // Debug helper: print the resolved heatmap data (including any fallback prices)
+  // so we can inspect it in the browser console while chasing the 502 rate-limit issue.
+  const heatmapData = useMemo(
+    () =>
+      GLOBAL_MARKET_SECTORS.flatMap((sector) =>
+        sector.stocks.map((stock) => {
+          const feedSymbol = stock.feedSymbol ?? toMarketSymbol(stock.symbol);
+          const rawPrice = feedSymbol === selectedSymbol ? livePrice : prices[feedSymbol];
+          return {
+            symbol: stock.symbol,
+            feedSymbol,
+            rawPrice: rawPrice ?? null,
+            displayPrice: getHeatmapPrice(feedSymbol),
+            usedFallback: rawPrice === undefined || rawPrice === null || rawPrice === 0,
+          };
+        })
+      ),
+    [prices, selectedSymbol, livePrice]
+  );
+
+  useEffect(() => {
+    console.log('[MarketHeatmap] heatmap data:', heatmapData);
+  }, [heatmapData]);
+
   const [activeFilter, setActiveFilter] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedStock, setSelectedStock] = useState<MarketTicker | null>(null);
